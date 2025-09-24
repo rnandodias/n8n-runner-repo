@@ -31,11 +31,11 @@ jobs:
 
       - name: Rsync repo → VPS
         run: |
-          rsync -avz --delete -e "ssh -p ${{ secrets.VPS_PORT }}"                 n8n-runner/ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/n8n-runner/
-          rsync -avz --delete -e "ssh -p ${{ secrets.VPS_PORT }}"                 local-files/ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/local-files/
+          rsync -avz --delete -e "ssh -p ${{ secrets.VPS_PORT }}" n8n-runner/ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/n8n-runner/
+          rsync -avz --delete -e "ssh -p ${{ secrets.VPS_PORT }}" local-files/ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/local-files/
 
       - name: Build + up runner
         run: |
           ssh -p "${{ secrets.VPS_PORT }}" ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "
-            cd /opt/n8n-runner &&                 docker compose --env-file /opt/n8n-runner/.env build runner &&                 docker compose --env-file /opt/n8n-runner/.env up -d runner &&                 docker compose --env-file /opt/n8n-runner/.env ps
+            cd /opt/n8n-runner && docker compose --env-file /opt/n8n-runner/.env build runner && docker compose --env-file /opt/n8n-runner/.env up -d runner && docker compose --env-file /opt/n8n-runner/.env ps
           "

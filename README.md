@@ -1,5 +1,12 @@
 # Runner Playwright para n8n (Deploy automático via GitHub Actions)
 
+## Subindo Alterações
+git add -A
+git commit -m "feat: descreva sua mudança"
+git push
+
+---
+
 Este repo contém um serviço **runner** (FastAPI + Playwright/Chromium) usado como sidecar do seu **n8n**.
 Deploy: **git push → GitHub Actions → (re)build + up** do runner na sua VPS.
 
