@@ -1,0 +1,36 @@
+services:
+  runner:
+    build:
+      context: ./runner
+    image: runner-playwright:latest
+    working_dir: /files/runner
+    environment:
+      - ALURA_USER=${ALURA_USER}
+      - ALURA_PASS=${ALURA_PASS}
+    volumes:
+      - /local-files:/files
+
+    # (A) Somente rede interna (acesso via http://runner:8000 do n8n)
+    networks:
+      n8n_net:
+        aliases: [runner]
+    restart: always
+
+    # (B) OPCIONAL: publicar HTTPS atrás do Traefik (descomente as linhas abaixo)
+    # labels:
+    #   - traefik.enable=true
+    #   - traefik.http.routers.runner.rule=Host(`${RUNNER_SUBDOMAIN}.${DOMAIN_NAME}`)
+    #   - traefik.http.routers.runner.tls=true
+    #   - traefik.http.routers.runner.entrypoints=web,websecure
+    #   - traefik.http.routers.runner.tls.certresolver=mytlschallenge
+    #   - traefik.http.services.runner.loadbalancer.server.port=8000
+    #   - traefik.docker.network=${TRAEFIK_NETWORK}
+    # networks:
+    #   n8n_net:
+    #     aliases: [runner]
+    #   traefik_net: {}  # mesma rede do Traefik
+
+networks:
+  n8n_net:
+    external: true
+    name: root_default  # REDE_EXISTENTE preenchida
