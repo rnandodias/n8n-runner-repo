@@ -37,6 +37,10 @@ class Payload(BaseModel):
 
 app = FastAPI()
 
+@app.get("/ping")
+def ping():
+    return {"ok": True, "service": "runner"}
+
 @app.post("/cadastrar_curso")
 def cadastrar(p: Payload):
     instrutores_path = "/files/data/instrutores.json"
