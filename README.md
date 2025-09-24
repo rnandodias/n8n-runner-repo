@@ -2,7 +2,7 @@
 
 ## Subindo Alterações
 git add -A
-git commit -m "feat: descreva sua mudança"
+git commit -m "Teste GitHub Actions"
 git push
 
 ---
