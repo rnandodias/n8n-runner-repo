@@ -75,6 +75,10 @@ class Payload(BaseModel):
     nome_instrutor: str
     tempo_curso: int
 
+class PesquisaPayload(BaseModel):
+    query: str
+    n_vagas: int
+
 app = FastAPI()
 
 # --------------------------------------------------------
@@ -88,10 +92,7 @@ def ping():
 # Realizar pesquisa na plataforma do LinkedIn
 # --------------------------------------------------------
 @app.post("/pesquisa_mercado_linkedin")
-def pesquisa_mercado_linkedin(p: Payload):
-    print(p.query)
-    print(p.n_vagas)
-    print(type(p.n_vagas))
+def pesquisa_mercado_linkedin(p: PesquisaPayload):
     params = {
         "keywords": p.query,
         "location": "Brasil",
@@ -105,7 +106,7 @@ def pesquisa_mercado_linkedin(p: Payload):
 
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True, args=["--start-maximized"])
+            browser = pw.chromium.launch(headless=True)
 
             page = browser.new_page()
             login_linkedin(page, user, passwd)
@@ -167,7 +168,7 @@ def pesquisa_mercado_linkedin(p: Payload):
             page.wait_for_timeout(2000)
             browser.close()
 
-        payload = {"ok": True, "mensagem": "Curso cadastrado com sucesso!", "data": descricoes}
+        payload = {"ok": True, "mensagem": "Busca finalizada com sucesso!", "data": descricoes}
         body = json.dumps(payload, ensure_ascii=False)
 
         return Response(
@@ -208,7 +209,7 @@ def cadastrar(p: Payload):
 
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True, args=["--start-maximized"])
+            browser = pw.chromium.launch(headless=True)
             page = browser.new_page()
             login_alura(page, user, passwd)
 
