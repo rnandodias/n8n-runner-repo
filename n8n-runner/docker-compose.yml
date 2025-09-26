@@ -7,6 +7,8 @@ services:
     environment:
       - ALURA_USER=${ALURA_USER}
       - ALURA_PASS=${ALURA_PASS}
+      - LINKEDIN_USER=${LINKEDIN_USER}
+      - LINKEDIN_PASS=${LINKEDIN_PASS}
     volumes:
       - /local-files:/files
 

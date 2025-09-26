@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+playwright
+Unidecode
+beautifulsoup4
+lxml
+tqdm

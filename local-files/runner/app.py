@@ -1,5 +1,8 @@
 import os, json, time, re
 from unidecode import unidecode
+from tqdm import tqdm
+from bs4 import BeautifulSoup
+from urllib.parse import urlencode
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
@@ -20,13 +23,50 @@ def gerar_codigo_cursos(nome_curso: str) -> str:
     codigo = re.sub(r'\s+', '-', nome).strip('-')
     return codigo
 
+def rolar_e_coletar_vagas(page, selector, max_rolagens=30, pausa=1.0): # Função de suporte para busca_vaga_linkedin()
+    vagas_coletadas = set()
+    
+    for _ in range(max_rolagens):
+        page.evaluate(f"""
+            const scroller = document.querySelector('{selector}');
+            if (scroller) {{
+                scroller.scrollBy(0, 1000);
+            }}
+        """)
+        
+        time.sleep(pausa)
+
+        soup = BeautifulSoup(page.content(), "html.parser")
+        novos_links = {
+            a["href"].split("?")[0]
+            for a in soup.select("a.job-card-list__title--link")
+            if "href" in a.attrs
+        }
+
+        antes = len(vagas_coletadas)
+        vagas_coletadas.update(novos_links)
+        depois = len(vagas_coletadas)
+
+        if depois - antes == 0:
+            break
+
+    return list(vagas_coletadas)
+
 def login_alura(page, user: str, password: str):
     page.goto("https://cursos.alura.com.br/loginForm")
     page.fill("#login-email", user)
     page.fill("#password", password)
     page.click("button.btn-login.btn-principal-form-dark")
     time.sleep(10)
-    print("✅ Login realizado com sucesso.")
+    print("✅ Login realizado com sucesso na Alura.")
+
+def login_linkedin(page, user: str, password: str):
+    page.goto("https://www.linkedin.com/checkpoint/lg/sign-in-another-account")
+    page.fill("input#username", user)
+    page.fill("input#password", password)
+    page.click("button[type='submit']")
+    time.sleep(10)
+    print("✅ Login realizado com sucesso no LinkedIn.")
 
 # --------------------------------------------------------
 
@@ -37,10 +77,108 @@ class Payload(BaseModel):
 
 app = FastAPI()
 
+# --------------------------------------------------------
+# Recurso de teste
+# --------------------------------------------------------
 @app.get("/ping")
 def ping():
     return {"ok": True, "service": "runner"}
 
+# --------------------------------------------------------
+# Realizar pesquisa na plataforma do LinkedIn
+# --------------------------------------------------------
+@app.post("/pesquisa_mercado_linkedin")
+def pesquisa_mercado_linkedin(p: Payload):
+    params = {
+        "keywords": p.query,
+        "location": "Brasil",
+        "start": 0
+    }
+    user = os.environ.get("LINKEDIN_USER")
+    passwd = os.environ.get("LINKEDIN_PASS")
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True, args=["--start-maximized"])
+
+            page = browser.new_page()
+            login_linkedin(page, user, passwd)
+
+            links = []
+            for i in tqdm(range(0, p.n_vagas, 25)):
+                params["start"] = i
+                page.goto(f"https://www.linkedin.com/jobs/search/?{urlencode(params)}")
+                header_xpath = "//header[contains(@class, 'scaffold-layout__list-header') and contains(@class, 'jobs-search-results-list__header')]"
+
+                page.wait_for_selector(f"xpath={header_xpath}", timeout=60000)
+                dynamic_div_xpath = f"{header_xpath}/following-sibling::div[1]"
+                dynamic_div = page.locator(f"xpath={dynamic_div_xpath}")
+                dynamic_div.wait_for(state="visible", timeout=60000)
+                class_value = dynamic_div.get_attribute("class").strip()
+
+                page.wait_for_selector(f".{class_value}")
+
+                html = page.content()
+                soup = BeautifulSoup(html, "html.parser")
+
+                vagas = rolar_e_coletar_vagas(
+                    page,
+                    selector=f".{class_value}",
+                    max_rolagens=10,
+                    pausa=1.5
+                )
+                links = list(dict.fromkeys(links + vagas))
+
+            print(f"{len(links)} vagas coletadas")
+            with open("output/data/steps/step_00_entendendo_o_mercado_links_vagas_linkedin.json", "w", encoding="utf-8") as f:
+                json.dump(links, f, indent=2, ensure_ascii=False)
+
+            descricoes = []
+            error = []
+            for link in tqdm(links):
+                link = f"https://www.linkedin.com{link}"
+                try:
+                    page.goto(link, timeout=60000, wait_until="domcontentloaded")
+                    page.wait_for_timeout(2000)
+                    soup = BeautifulSoup(page.content(), "html.parser")
+                except Exception as e:
+                    error.append(e)
+                    continue
+
+                bloco = soup.find("div", id="job-details")
+                if bloco:
+                    titulo = soup.find("h1", class_="t-24 t-bold inline").get_text()
+                    texto = bloco.get_text()
+                    descricoes.append({
+                        "url": link, 
+                        "titulo": titulo, 
+                        "descricao": texto
+                    })
+                else:
+                    print(f"Falha ao extrair: {link}")
+
+            page.goto("https://www.linkedin.com/m/logout/")
+            page.wait_for_timeout(2000)
+            browser.close()
+
+        payload = {"ok": True, "mensagem": "Curso cadastrado com sucesso!", "data": descricoes}
+        body = json.dumps(payload, ensure_ascii=False)
+
+        return Response(
+            content=body,
+            media_type="application/json",
+            headers={"Connection": "close"}
+        )
+    
+    except PlaywrightTimeout as e:
+        raise HTTPException(status_code=500, detail=f"Timeout Playwright: {e}")
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Falha Playwright: {e}")
+
+# --------------------------------------------------------
+# Cadastrar um curso na plataforma da Alura
+# --------------------------------------------------------
 @app.post("/cadastrar_curso")
 def cadastrar(p: Payload):
     instrutores_path = "/files/data/instrutores.json"

@@ -42,6 +42,8 @@ jobs:
             printf '%s\n' \
               'ALURA_USER=${{ secrets.ALURA_USER }}' \
               'ALURA_PASS=${{ secrets.ALURA_PASS }}' \
+              'LINKEDIN_USER=${{ secrets.LINKEDIN_USER }}' \
+              'LINKEDIN_PASS=${{ secrets.LINKEDIN_PASS }}' \
               > /opt/n8n-runner/.env && \
             chmod 600 /opt/n8n-runner/.env
           "
