@@ -89,6 +89,9 @@ def ping():
 # --------------------------------------------------------
 @app.post("/pesquisa_mercado_linkedin")
 def pesquisa_mercado_linkedin(p: Payload):
+    print(p.query)
+    print(p.n_vagas)
+    print(type(p.n_vagas))
     params = {
         "keywords": p.query,
         "location": "Brasil",
@@ -108,7 +111,7 @@ def pesquisa_mercado_linkedin(p: Payload):
             login_linkedin(page, user, passwd)
 
             links = []
-            for i in tqdm(range(0, p.n_vagas, 25)):
+            for i in tqdm(range(0, int(p.n_vagas), 25)):
                 params["start"] = i
                 page.goto(f"https://www.linkedin.com/jobs/search/?{urlencode(params)}")
                 header_xpath = "//header[contains(@class, 'scaffold-layout__list-header') and contains(@class, 'jobs-search-results-list__header')]"
