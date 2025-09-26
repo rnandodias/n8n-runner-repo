@@ -97,6 +97,9 @@ def pesquisa_mercado_linkedin(p: Payload):
     user = os.environ.get("LINKEDIN_USER")
     passwd = os.environ.get("LINKEDIN_PASS")
 
+    if not user or not passwd:
+        raise HTTPException(status_code=500, detail="Defina LINKEDIN_USER e LINKEDIN_PASS no ambiente do runner.")
+
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True, args=["--start-maximized"])
