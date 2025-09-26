@@ -70,14 +70,14 @@ def login_linkedin(page, user: str, password: str):
 
 # --------------------------------------------------------
 
+class PesquisaPayload(BaseModel):
+    query: str
+    n_vagas: int
+
 class Payload(BaseModel):
     nome_curso: str
     nome_instrutor: str
     tempo_curso: int
-
-class PesquisaPayload(BaseModel):
-    query: str
-    n_vagas: int
 
 app = FastAPI()
 
