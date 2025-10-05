@@ -125,7 +125,7 @@ def pesquisa_mercado_linkedin(p: PesquisaPayload):
                 time.sleep(10)
                 # class_value = dynamic_div.get_attribute("class").strip()
                 class_value = "scaffold-layout__list "
-                page.wait_for_selector(f".{class_value}")
+                # page.wait_for_selector(f".{class_value}")
 
                 html = page.content()
                 soup = BeautifulSoup(html, "html.parser")
