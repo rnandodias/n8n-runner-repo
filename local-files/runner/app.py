@@ -106,7 +106,7 @@ def pesquisa_mercado_linkedin(p: PesquisaPayload):
 
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
+            browser = pw.chromium.launch(headless=False, args=["--start-maximized"])
 
             page = browser.new_page()
             login_linkedin(page, user, passwd)
