@@ -2,7 +2,7 @@
 
 ## Subindo Alterações
 git add -A
-git commit -m "Subindo alterações"
+git commit -m "Alterações no processo do LinkedIn"
 git push
 
 ---

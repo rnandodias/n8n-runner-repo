@@ -117,10 +117,12 @@ def pesquisa_mercado_linkedin(p: PesquisaPayload):
                 page.goto(f"https://www.linkedin.com/jobs/search/?{urlencode(params)}")
                 header_xpath = "//header[contains(@class, 'scaffold-layout__list-header') and contains(@class, 'jobs-search-results-list__header')]"
 
-                page.wait_for_selector(f"xpath={header_xpath}", timeout=60000)
+                # page.wait_for_selector(f"xpath={header_xpath}", timeout=60000)
+                time.sleep(10)
                 dynamic_div_xpath = f"{header_xpath}/following-sibling::div[1]"
                 dynamic_div = page.locator(f"xpath={dynamic_div_xpath}")
-                dynamic_div.wait_for(state="visible", timeout=60000)
+                # dynamic_div.wait_for(state="visible", timeout=60000)
+                time.sleep(10)
                 class_value = dynamic_div.get_attribute("class").strip()
 
                 page.wait_for_selector(f".{class_value}")
