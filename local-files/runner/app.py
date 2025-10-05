@@ -137,38 +137,38 @@ def pesquisa_mercado_linkedin(p: PesquisaPayload):
                 links = list(dict.fromkeys(links + vagas))
 
             print(f"{len(links)} vagas coletadas")
-            with open("output/data/steps/step_00_entendendo_o_mercado_links_vagas_linkedin.json", "w", encoding="utf-8") as f:
-                json.dump(links, f, indent=2, ensure_ascii=False)
+            # with open("output/data/steps/step_00_entendendo_o_mercado_links_vagas_linkedin.json", "w", encoding="utf-8") as f:
+            #     json.dump(links, f, indent=2, ensure_ascii=False)
 
-            descricoes = []
-            error = []
-            for link in tqdm(links):
-                link = f"https://www.linkedin.com{link}"
-                try:
-                    page.goto(link, timeout=60000, wait_until="domcontentloaded")
-                    page.wait_for_timeout(2000)
-                    soup = BeautifulSoup(page.content(), "html.parser")
-                except Exception as e:
-                    error.append(e)
-                    continue
+            # descricoes = []
+            # error = []
+            # for link in tqdm(links):
+            #     link = f"https://www.linkedin.com{link}"
+            #     try:
+            #         page.goto(link, timeout=60000, wait_until="domcontentloaded")
+            #         page.wait_for_timeout(2000)
+            #         soup = BeautifulSoup(page.content(), "html.parser")
+            #     except Exception as e:
+            #         error.append(e)
+            #         continue
 
-                bloco = soup.find("div", id="job-details")
-                if bloco:
-                    titulo = soup.find("h1", class_="t-24 t-bold inline").get_text()
-                    texto = bloco.get_text()
-                    descricoes.append({
-                        "url": link, 
-                        "titulo": titulo, 
-                        "descricao": texto
-                    })
-                else:
-                    print(f"Falha ao extrair: {link}")
+            #     bloco = soup.find("div", id="job-details")
+            #     if bloco:
+            #         titulo = soup.find("h1", class_="t-24 t-bold inline").get_text()
+            #         texto = bloco.get_text()
+            #         descricoes.append({
+            #             "url": link, 
+            #             "titulo": titulo, 
+            #             "descricao": texto
+            #         })
+            #     else:
+            #         print(f"Falha ao extrair: {link}")
 
             page.goto("https://www.linkedin.com/m/logout/")
             page.wait_for_timeout(2000)
             browser.close()
 
-        payload = {"ok": True, "mensagem": "Busca finalizada com sucesso!", "data": descricoes}
+        payload = {"ok": True, "mensagem": "Busca finalizada com sucesso!", "data": links}
         body = json.dumps(payload, ensure_ascii=False)
 
         return Response(

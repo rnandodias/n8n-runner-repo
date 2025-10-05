@@ -16,6 +16,7 @@ services:
     networks:
       n8n_net:
         aliases: [runner]
+      svc_net: {}
     restart: always
 
     # (B) OPCIONAL: publicar HTTPS atrás do Traefik (descomente as linhas abaixo)
@@ -36,3 +37,5 @@ networks:
   n8n_net:
     external: true
     name: root_default  # REDE_EXISTENTE preenchida
+  svc_net:
+    external: true
