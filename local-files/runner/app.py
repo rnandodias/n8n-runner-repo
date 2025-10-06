@@ -22,35 +22,32 @@ def gerar_codigo_cursos(nome_curso: str) -> str:
     # Substitui espaços por -
     codigo = re.sub(r'\s+', '-', nome).strip('-')
     return codigo
+# =============================================================================================
 
-def rolar_e_coletar_vagas(page, selector, max_rolagens=30, pausa=1.0): # Função de suporte para busca_vaga_linkedin()
+def rolar_e_coletar_vagas(page, container_locator, max_rolagens=30, pausa=1.0):
     vagas_coletadas = set()
-    
+
     for _ in range(max_rolagens):
-        page.evaluate(f"""
-            const scroller = document.querySelector('{selector}');
-            if (scroller) {{
-                scroller.scrollBy(0, 1000);
-            }}
-        """)
-        
+        # rola o container com o handle (sem reconstruir seletor)
+        container_locator.evaluate("el => el.scrollBy(0, 1000)")
         time.sleep(pausa)
 
+        # pegue links por padrão estável
+        # /jobs/view/ é o padrão de detalhe de vaga no LinkedIn
         soup = BeautifulSoup(page.content(), "html.parser")
         novos_links = {
             a["href"].split("?")[0]
-            for a in soup.select("a.job-card-list__title--link")
+            for a in soup.select('a[href^="/jobs/view/"]')
             if "href" in a.attrs
         }
 
         antes = len(vagas_coletadas)
         vagas_coletadas.update(novos_links)
-        depois = len(vagas_coletadas)
-
-        if depois - antes == 0:
+        if len(vagas_coletadas) == antes:
             break
 
     return list(vagas_coletadas)
+# =============================================================================================
 
 def login_alura(page, user: str, password: str):
     page.goto("https://cursos.alura.com.br/loginForm")
@@ -59,6 +56,7 @@ def login_alura(page, user: str, password: str):
     page.click("button.btn-login.btn-principal-form-dark")
     time.sleep(10)
     print("✅ Login realizado com sucesso na Alura.")
+# =============================================================================================
 
 def login_linkedin(page, user: str, password: str):
     page.goto("https://www.linkedin.com/checkpoint/lg/sign-in-another-account")
@@ -115,27 +113,44 @@ def pesquisa_mercado_linkedin(p: PesquisaPayload):
             for i in tqdm(range(0, int(p.n_vagas), 25)):
                 params["start"] = i
                 page.goto(f"https://www.linkedin.com/jobs/search/?{urlencode(params)}")
-                header_xpath = "//header[contains(@class, 'scaffold-layout__list-header') and contains(@class, 'jobs-search-results-list__header')]"
+                # header_xpath = "//header[contains(@class, 'scaffold-layout__list-header') and contains(@class, 'jobs-search-results-list__header')]"
 
                 # page.wait_for_selector(f"xpath={header_xpath}", timeout=60000)
-                time.sleep(10)
+                # # time.sleep(10)
                 # dynamic_div_xpath = f"{header_xpath}/following-sibling::div[1]"
                 # dynamic_div = page.locator(f"xpath={dynamic_div_xpath}")
                 # dynamic_div.wait_for(state="visible", timeout=60000)
-                time.sleep(10)
+                # # time.sleep(10)
                 # class_value = dynamic_div.get_attribute("class").strip()
-                class_value = "scaffold-layout__list "
+                # # class_value = "scaffold-layout__list "
                 # page.wait_for_selector(f".{class_value}")
 
-                html = page.content()
-                soup = BeautifulSoup(html, "html.parser")
+                # html = page.content()
+                # soup = BeautifulSoup(html, "html.parser")
 
-                vagas = rolar_e_coletar_vagas(
-                    page,
-                    selector=f".{class_value}",
-                    max_rolagens=10,
-                    pausa=1.5
-                )
+                # vagas = rolar_e_coletar_vagas(
+                #     page,
+                #     selector=f".{class_value}",
+                #     max_rolagens=10,
+                #     pausa=1.5
+                # )
+                # links = list(dict.fromkeys(links + vagas))
+
+                # 1) aguarda o layout da lista (classe “raiz” estável)
+                # Use CSS por parte do nome em vez de XPath por header frágil
+                lista = page.locator("div.scaffold-layout__list")
+                lista.first.wait_for(state="visible", timeout=60000)
+
+                # 2) às vezes o container que rola é um filho (results list)
+                # Tente algo mais específico se existir; senão, use o pai mesmo
+                results = page.locator("div.jobs-search-results-list").first
+                container = results if results.count() > 0 else lista.first
+
+                # 3) carrega os primeiros itens (evita variações de tempo no Linux headless)
+                page.wait_for_selector('a[href^="/jobs/view/"]', timeout=60000)
+
+                # 4) rolar e coletar usando o HANDLE (não string de classe)
+                vagas = rolar_e_coletar_vagas(page, container, max_rolagens=10, pausa=1.2)
                 links = list(dict.fromkeys(links + vagas))
 
             print(f"{len(links)} vagas coletadas")
