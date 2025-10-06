@@ -104,7 +104,16 @@ def pesquisa_mercado_linkedin(p: PesquisaPayload):
 
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True, args=["--no-sandbox","--disable-setuid-sandbox"])
+            browser = pw.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox", "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-software-rasterizer",
+                    "--disable-blink-features=AutomationControlled"
+                ]
+            )
 
             page = browser.new_page()
             login_linkedin(page, user, passwd)
@@ -195,9 +204,15 @@ def pesquisa_mercado_linkedin(p: PesquisaPayload):
         )
     
     except PlaywrightTimeout as e:
+        page.screenshot(path="/tmp/lnkd-debug.png", full_page=True)
+        with open("/tmp/lnkd-debug.html", "w", encoding="utf-8") as f:
+            f.write(page.content())
         raise HTTPException(status_code=500, detail=f"Timeout Playwright: {e}")
     
     except Exception as e:
+        page.screenshot(path="/tmp/lnkd-debug.png", full_page=True)
+        with open("/tmp/lnkd-debug.html", "w", encoding="utf-8") as f:
+            f.write(page.content())
         raise HTTPException(status_code=500, detail=f"Falha Playwright: {e}")
 
 # --------------------------------------------------------
