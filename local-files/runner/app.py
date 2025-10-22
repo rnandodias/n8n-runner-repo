@@ -1,5 +1,6 @@
 import os, json, time, re
 from unidecode import unidecode
+import unicodedata
 from tqdm import tqdm
 from bs4 import BeautifulSoup
 from urllib.parse import urlencode
@@ -48,6 +49,31 @@ def rolar_e_coletar_vagas(page, container_locator, max_rolagens=30, pausa=1.0):
 
     return list(vagas_coletadas)
 # =============================================================================================
+def remover_emojis_e_simbolos(texto):
+    return ''.join(
+        c for c in texto
+        if not unicodedata.category(c).startswith("So")
+        and not unicodedata.category(c).startswith("Sk")
+    )
+
+def remover_caracteres_invisiveis(texto):
+    invisiveis = [
+        '\u200b',  # zero width space
+        '\u200c',  # zero width non-joiner
+        '\u200d',  # zero width joiner
+        '\uFEFF'   # zero width no-break space
+    ]
+    for c in invisiveis:
+        texto = texto.replace(c, '')
+    return texto
+
+def limpar_texto(texto):
+    texto = texto.strip()
+    texto = re.sub(r"\s+", " ", texto)
+    texto = remover_caracteres_invisiveis(texto)
+    texto = remover_emojis_e_simbolos(texto)
+    return texto
+# =============================================================================================
 
 def login_alura(page, user: str, password: str):
     page.goto("https://cursos.alura.com.br/loginForm")
@@ -76,6 +102,9 @@ class Payload(BaseModel):
     nome_curso: str
     nome_instrutor: str
     tempo_curso: int
+
+class IDPayload(BaseModel):
+    id: str
 
 app = FastAPI()
 
@@ -204,13 +233,13 @@ def pesquisa_mercado_linkedin(p: PesquisaPayload):
         )
     
     except PlaywrightTimeout as e:
-        page.screenshot(path="/tmp/lnkd-debug.png", full_page=True)
+        # page.screenshot(path="/tmp/lnkd-debug.png", full_page=True)
         with open("/tmp/lnkd-debug.html", "w", encoding="utf-8") as f:
             f.write(page.content())
         raise HTTPException(status_code=500, detail=f"Timeout Playwright: {e}")
     
     except Exception as e:
-        page.screenshot(path="/tmp/lnkd-debug.png", full_page=True)
+        # page.screenshot(path="/tmp/lnkd-debug.png", full_page=True)
         with open("/tmp/lnkd-debug.html", "w", encoding="utf-8") as f:
             f.write(page.content())
         raise HTTPException(status_code=500, detail=f"Falha Playwright: {e}")
@@ -270,6 +299,90 @@ def cadastrar(p: Payload):
             headers={"Connection": "close"}
         )
     
+    except PlaywrightTimeout as e:
+        raise HTTPException(status_code=500, detail=f"Timeout Playwright: {e}")
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Falha Playwright: {e}")
+
+# --------------------------------------------------------
+# Obter a transcrição de um curso na plataforma da Alura
+# --------------------------------------------------------
+@app.post("/get_transcription_course")
+def get_transcription_course(p: IDPayload):
+    user = os.environ.get("ALURA_USER")
+    passwd = os.environ.get("ALURA_PASS")
+
+    if not user or not passwd:
+        raise HTTPException(status_code=500, detail="Defina ALURA_USER e ALURA_PASS no ambiente do runner.")
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            page = browser.new_page()
+            login_alura(page, user, passwd)
+
+            page.goto(f"https://cursos.alura.com.br/admin/courses/v2/{p.id}")
+            link = f"https://cursos.alura.com.br{page.get_attribute("text=Ver curso", "href")}"
+
+            page.goto(link, timeout=60000, wait_until="domcontentloaded")
+            try:
+                page.wait_for_selector(".courseSectionList", timeout=60000)
+                html = page.content()
+                soup = BeautifulSoup(html, "html.parser")
+            except TimeoutError:
+                print(f"[AVISO] Timeout em {link}. Pulando...")
+
+            nome = soup.find("h1").strong.get_text()
+
+            videos = []
+            for item in soup.find_all("li", class_="courseSection-listItem"):
+                aula = f"https://cursos.alura.com.br{item.find("a", class_="courseSectionList-section")["href"]}"
+                page.goto(aula, timeout=60000, wait_until="domcontentloaded")
+                try:
+                    page.wait_for_selector(".task-menu-sections-select", timeout=60000)
+                    html = page.content()
+                    soup_section = BeautifulSoup(html, "html.parser")
+                    for video in soup_section.find_all("a", class_="task-menu-nav-item-link task-menu-nav-item-link-VIDEO"):
+                        videos.append(f"https://cursos.alura.com.br{video["href"]}")
+                except TimeoutError:
+                    print(f"[AVISO] Timeout em {aula}. Pulando...")
+                    continue
+
+            transcricoes = []
+            for index, video in enumerate(videos):
+                page.goto(video, timeout=60000, wait_until="domcontentloaded")
+                try:
+                    page.wait_for_selector("#transcription", timeout=60000)
+                    html = page.content()
+                    soup_video = BeautifulSoup(html, "html.parser")
+                    title = soup_video.find("h1", class_="task-body-header-title").span.get_text()
+                    transcription = soup_video.find("section", id="transcription").get_text()
+                    transcription = transcription.replace("Transcrição", f"Vídeo {index + 1} -{title}")
+                    # curso[f"transcricao_video_{index + 1}"] = transcription
+                    texto_limpo = limpar_texto(transcription)
+                    transcricoes.append(texto_limpo)                        
+                except TimeoutError:
+                    print(f"[AVISO] Timeout em {video}. Pulando...")
+                    # curso[f"transcricao_video_{index + 1}"] = None
+                    transcricoes.append(None)                        
+
+            browser.close()
+            
+        payload = {
+            "id": p.id,
+            "nome": nome,
+            "link": link,
+            "transcricao": transcricoes
+        }
+        body = json.dumps(payload, ensure_ascii=False)
+
+        return Response(
+            content=body,
+            media_type="application/json",
+            headers={"Connection": "close"}
+        )
+        
     except PlaywrightTimeout as e:
         raise HTTPException(status_code=500, detail=f"Timeout Playwright: {e}")
     
