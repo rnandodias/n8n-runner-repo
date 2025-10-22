@@ -337,14 +337,14 @@ def get_transcription_course(p: IDPayload):
 
             videos = []
             for item in soup.find_all("li", class_="courseSection-listItem"):
-                aula = f"https://cursos.alura.com.br{item.find("a", class_="courseSectionList-section")["href"]}"
+                aula = f"https://cursos.alura.com.br{item.find('a', class_='courseSectionList-section')['href']}"
                 page.goto(aula, timeout=60000, wait_until="domcontentloaded")
                 try:
                     page.wait_for_selector(".task-menu-sections-select", timeout=60000)
                     html = page.content()
                     soup_section = BeautifulSoup(html, "html.parser")
                     for video in soup_section.find_all("a", class_="task-menu-nav-item-link task-menu-nav-item-link-VIDEO"):
-                        videos.append(f"https://cursos.alura.com.br{video["href"]}")
+                        videos.append(f"https://cursos.alura.com.br{video['href']}")
                 except TimeoutError:
                     print(f"[AVISO] Timeout em {aula}. Pulando...")
                     continue
