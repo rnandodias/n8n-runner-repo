@@ -14,6 +14,7 @@ import shutil
 import uuid
 from pathlib import Path
 from typing import List
+import requests
 
 # Diretório para arquivos temporários
 TEMP_DIR = Path("/tmp/video_processing")
@@ -199,6 +200,19 @@ def cleanup_job(job_dir: Path, delay_seconds: int = 3600):
         shutil.rmtree(job_dir, ignore_errors=True)
         print(f"🧹 Limpeza realizada: {job_dir}")
 
+# =============================================================================================
+
+def baixar_arquivo(url: str, destino: str):
+    """Baixa um arquivo de uma URL"""
+    response = requests.get(url, stream=True, timeout=60)
+    response.raise_for_status()
+    
+    with open(destino, 'wb') as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            f.write(chunk)
+    
+    print(f"✅ Download concluído: {destino}")
+
 # --------------------------------------------------------
 class PesquisaPayload(BaseModel):
     query: str
@@ -212,9 +226,11 @@ class Payload(BaseModel):
 class IDPayload(BaseModel):
     id: str
 
-class VideoProcessingPayload(BaseModel):
-    transicao_duracao: float = 0.5  # duração da transição em segundos
-    transicao_tipo: str = "fade"  # fade, wipeleft, wiperight, slideright, etc
+class VideoURLProcessingPayload(BaseModel):
+    video_urls: List[str]  # Lista de URLs dos vídeos
+    audio_url: str  # URL do áudio da narração
+    transicao_duracao: float = 0.5
+    transicao_tipo: str = "fade"
 
 # --------------------------------------------------------
 
@@ -226,7 +242,88 @@ app = FastAPI()
 @app.get("/ping")
 def ping():
     return {"ok": True, "service": "runner"}
-
+    
+# --------------------------------------------------------
+# Realizar pesquisa na plataforma do LinkedIn
+# --------------------------------------------------------
+@app.post("/processar_video_urls")
+async def processar_video_urls(
+    payload: VideoURLProcessingPayload,
+    background_tasks: BackgroundTasks
+):
+    """
+    Processa vídeos a partir de URLs, adicionando transições e áudio de narração.
+    
+    Body JSON:
+    {
+      "video_urls": ["https://exemplo.com/video1.mp4", "https://exemplo.com/video2.mp4"],
+      "audio_url": "https://exemplo.com/audio.mp3",
+      "transicao_duracao": 0.5,
+      "transicao_tipo": "fade"
+    }
+    """
+    job_id = str(uuid.uuid4())
+    job_dir = TEMP_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        print(f"🎬 Iniciando processamento: {job_id}")
+        print(f"📥 Baixando {len(payload.video_urls)} vídeos...")
+        
+        # Baixar vídeos
+        video_paths = []
+        for i, url in enumerate(payload.video_urls):
+            video_path = job_dir / f"video_{i:03d}.mp4"
+            baixar_arquivo(url, str(video_path))
+            video_paths.append(str(video_path))
+        
+        print(f"✅ {len(video_paths)} vídeos baixados")
+        
+        # Baixar áudio
+        print(f"📥 Baixando áudio da narração...")
+        audio_path = job_dir / "audio_narracao.mp3"
+        baixar_arquivo(payload.audio_url, str(audio_path))
+        print(f"✅ Áudio baixado")
+        
+        # Processar
+        output_path = job_dir / "video_final.mp4"
+        
+        print(f"🔄 Processando vídeo com transições {payload.transicao_tipo}...")
+        criar_video_com_transicoes(
+            video_paths,
+            str(audio_path),
+            str(output_path),
+            transicao_duracao=payload.transicao_duracao,
+            transicao_tipo=payload.transicao_tipo
+        )
+        
+        print(f"✅ Processamento concluído: {output_path}")
+        
+        # Agendar limpeza após 1 hora
+        background_tasks.add_task(cleanup_job, job_dir, 3600)
+        
+        # Retornar o vídeo
+        return FileResponse(
+            path=str(output_path),
+            media_type="video/mp4",
+            filename=f"video_final_{job_id[:8]}.mp4",
+            headers={
+                "Content-Disposition": f'attachment; filename="video_final_{job_id[:8]}.mp4"'
+            }
+        )
+    
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Erro ao baixar arquivos: {str(e)}")
+        if job_dir.exists():
+            shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"Erro ao baixar arquivos: {str(e)}")
+    
+    except Exception as e:
+        print(f"❌ Erro no processamento: {str(e)}")
+        if job_dir.exists():
+            shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"Erro ao processar vídeo: {str(e)}")
+    
 # --------------------------------------------------------
 # Realizar pesquisa na plataforma do LinkedIn
 # --------------------------------------------------------
