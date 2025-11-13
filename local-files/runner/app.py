@@ -114,83 +114,76 @@ def criar_video_com_transicoes(
     transicao_tipo: str = "fade"
 ):
     """
-    Junta vídeos com transições usando FFmpeg
+    Junta vídeos com transições e adiciona áudio de narração
     """
     if len(videos) == 0:
         raise ValueError("Nenhum vídeo fornecido")
     
-    if len(videos) == 1:
-        # Se só tem 1 vídeo, apenas adiciona o áudio
+    temp_video_sem_audio = output.replace('.mp4', '_temp.mp4')
+    
+    try:
+        # ETAPA 1: Juntar vídeos com transições (sem áudio)
+        if len(videos) == 1:
+            shutil.copy(videos[0], temp_video_sem_audio)
+        else:
+            print(f"🔄 Juntando {len(videos)} vídeos com transições...")
+            
+            filter_parts = []
+            last_label = "[0:v]"
+            
+            for i in range(len(videos) - 1):
+                next_input = f"[{i+1}:v]"
+                out_label = f"[v{i}]" if i < len(videos) - 2 else "[vout]"
+                offset = (i + 1) * 5 - transicao_duracao
+                
+                xfade = f"{last_label}{next_input}xfade=transition={transicao_tipo}:duration={transicao_duracao}:offset={offset}{out_label}"
+                filter_parts.append(xfade)
+                last_label = out_label
+            
+            filter_complex = ";".join(filter_parts)
+            
+            cmd = ['ffmpeg', '-y']
+            for video in videos:
+                cmd.extend(['-i', video])
+            
+            cmd.extend([
+                '-filter_complex', filter_complex,
+                '-map', '[vout]',
+                '-c:v', 'libx264',
+                '-preset', 'faster',
+                '-pix_fmt', 'yuv420p',
+                '-an',
+                temp_video_sem_audio
+            ])
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise Exception(f"Erro ao juntar vídeos: {result.stderr}")
+        
+        # ETAPA 2: Adicionar áudio da narração
+        print(f"🔄 Adicionando áudio da narração...")
+        
         cmd = [
             'ffmpeg', '-y',
-            '-i', videos[0],
+            '-i', temp_video_sem_audio,
             '-i', audio_narracao,
             '-c:v', 'copy',
             '-c:a', 'aac',
-            '-map', '0:v:0',
-            '-map', '1:a:0',
+            '-b:a', '192k',
             '-shortest',
             output
         ]
-        subprocess.run(cmd, check=True, capture_output=True)
-        return
-    
-    # Construir filtro complexo para xfade
-    filter_parts = []
-    last_label = "[0:v]"
-    
-    for i in range(len(videos) - 1):
-        next_input = f"[{i+1}:v]"
-        out_label = f"[v{i}]" if i < len(videos) - 2 else "[vout]"
         
-        # Calcular offset (quando a transição deve começar)
-        # Assumindo que cada vídeo tem ~5s, a transição começa 0.5s antes do fim
-        offset = (i + 1) * 5 - transicao_duracao
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise Exception(f"Erro ao adicionar áudio: {result.stderr}")
         
-        xfade = f"{last_label}{next_input}xfade=transition={transicao_tipo}:duration={transicao_duracao}:offset={offset}{out_label}"
-        filter_parts.append(xfade)
-        last_label = out_label
-    
-    # Concatenar áudios dos vídeos
-    audio_inputs = ''.join([f"[{i}:a]" for i in range(len(videos))])
-    audio_concat = f"{audio_inputs}concat=n={len(videos)}:v=0:a=1[a_video]"
-    filter_parts.append(audio_concat)
-    
-    # Mixar áudio dos vídeos com narração
-    audio_mix = "[a_video][{}:a]amix=inputs=2:duration=longest[aout]".format(len(videos))
-    filter_parts.append(audio_mix)
-    
-    filter_complex = ";".join(filter_parts)
-    
-    # Montar comando FFmpeg
-    cmd = ['ffmpeg', '-y']
-    
-    # Adicionar inputs dos vídeos
-    for video in videos:
-        cmd.extend(['-i', video])
-    
-    # Adicionar input do áudio da narração
-    cmd.extend(['-i', audio_narracao])
-    
-    # Adicionar filtro complexo
-    cmd.extend([
-        '-filter_complex', filter_complex,
-        '-map', '[vout]',
-        '-map', '[aout]',
-        '-c:v', 'libx264',
-        '-preset', 'faster',  # mais rápido para processar na VPS
-        '-c:a', 'aac',
-        '-b:a', '192k',
-        '-pix_fmt', 'yuv420p',
-        output
-    ])
-    
-    # Executar comando
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    
-    if result.returncode != 0:
-        raise Exception(f"Erro FFmpeg: {result.stderr}")
-
+        print(f"✅ Vídeo processado!")
+        
+    finally:
+        if os.path.exists(temp_video_sem_audio):
+            os.remove(temp_video_sem_audio)
+            
 # =============================================================================================
 
 def cleanup_job(job_dir: Path, delay_seconds: int = 3600):
