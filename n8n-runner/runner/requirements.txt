@@ -5,3 +5,4 @@ Unidecode
 beautifulsoup4
 lxml
 tqdm
+ffmpeg-python

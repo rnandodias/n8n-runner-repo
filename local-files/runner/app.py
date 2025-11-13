@@ -4,10 +4,20 @@ import unicodedata
 from tqdm import tqdm
 from bs4 import BeautifulSoup
 from urllib.parse import urlencode
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse, Response
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
+from fastapi.responses import JSONResponse, Response, FileResponse
 from pydantic import BaseModel
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+
+import subprocess
+import shutil
+import uuid
+from pathlib import Path
+from typing import List
+
+# Diretório para arquivos temporários
+TEMP_DIR = Path("/tmp/video_processing")
+TEMP_DIR.mkdir(exist_ok=True)
 
 # --------- helpers (adicione suas regras reais) ----------
 def gerar_codigo_cursos(nome_curso: str) -> str:
@@ -49,6 +59,7 @@ def rolar_e_coletar_vagas(page, container_locator, max_rolagens=30, pausa=1.0):
 
     return list(vagas_coletadas)
 # =============================================================================================
+
 def remover_emojis_e_simbolos(texto):
     return ''.join(
         c for c in texto
@@ -92,8 +103,103 @@ def login_linkedin(page, user: str, password: str):
     time.sleep(10)
     print("✅ Login realizado com sucesso no LinkedIn.")
 
-# --------------------------------------------------------
+# =============================================================================================
 
+def criar_video_com_transicoes(
+    videos: List[str],
+    audio_narracao: str,
+    output: str,
+    transicao_duracao: float = 0.5,
+    transicao_tipo: str = "fade"
+):
+    """
+    Junta vídeos com transições usando FFmpeg
+    """
+    if len(videos) == 0:
+        raise ValueError("Nenhum vídeo fornecido")
+    
+    if len(videos) == 1:
+        # Se só tem 1 vídeo, apenas adiciona o áudio
+        cmd = [
+            'ffmpeg', '-y',
+            '-i', videos[0],
+            '-i', audio_narracao,
+            '-c:v', 'copy',
+            '-c:a', 'aac',
+            '-map', '0:v:0',
+            '-map', '1:a:0',
+            '-shortest',
+            output
+        ]
+        subprocess.run(cmd, check=True, capture_output=True)
+        return
+    
+    # Construir filtro complexo para xfade
+    filter_parts = []
+    last_label = "[0:v]"
+    
+    for i in range(len(videos) - 1):
+        next_input = f"[{i+1}:v]"
+        out_label = f"[v{i}]" if i < len(videos) - 2 else "[vout]"
+        
+        # Calcular offset (quando a transição deve começar)
+        # Assumindo que cada vídeo tem ~5s, a transição começa 0.5s antes do fim
+        offset = (i + 1) * 5 - transicao_duracao
+        
+        xfade = f"{last_label}{next_input}xfade=transition={transicao_tipo}:duration={transicao_duracao}:offset={offset}{out_label}"
+        filter_parts.append(xfade)
+        last_label = out_label
+    
+    # Concatenar áudios dos vídeos
+    audio_inputs = ''.join([f"[{i}:a]" for i in range(len(videos))])
+    audio_concat = f"{audio_inputs}concat=n={len(videos)}:v=0:a=1[a_video]"
+    filter_parts.append(audio_concat)
+    
+    # Mixar áudio dos vídeos com narração
+    audio_mix = "[a_video][{}:a]amix=inputs=2:duration=longest[aout]".format(len(videos))
+    filter_parts.append(audio_mix)
+    
+    filter_complex = ";".join(filter_parts)
+    
+    # Montar comando FFmpeg
+    cmd = ['ffmpeg', '-y']
+    
+    # Adicionar inputs dos vídeos
+    for video in videos:
+        cmd.extend(['-i', video])
+    
+    # Adicionar input do áudio da narração
+    cmd.extend(['-i', audio_narracao])
+    
+    # Adicionar filtro complexo
+    cmd.extend([
+        '-filter_complex', filter_complex,
+        '-map', '[vout]',
+        '-map', '[aout]',
+        '-c:v', 'libx264',
+        '-preset', 'faster',  # mais rápido para processar na VPS
+        '-c:a', 'aac',
+        '-b:a', '192k',
+        '-pix_fmt', 'yuv420p',
+        output
+    ])
+    
+    # Executar comando
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    
+    if result.returncode != 0:
+        raise Exception(f"Erro FFmpeg: {result.stderr}")
+
+# =============================================================================================
+
+def cleanup_job(job_dir: Path, delay_seconds: int = 3600):
+    """Limpa arquivos temporários após um delay"""
+    time.sleep(delay_seconds)
+    if job_dir.exists():
+        shutil.rmtree(job_dir, ignore_errors=True)
+        print(f"🧹 Limpeza realizada: {job_dir}")
+
+# --------------------------------------------------------
 class PesquisaPayload(BaseModel):
     query: str
     n_vagas: int
@@ -106,6 +212,12 @@ class Payload(BaseModel):
 class IDPayload(BaseModel):
     id: str
 
+class VideoProcessingPayload(BaseModel):
+    transicao_duracao: float = 0.5  # duração da transição em segundos
+    transicao_tipo: str = "fade"  # fade, wipeleft, wiperight, slideright, etc
+
+# --------------------------------------------------------
+
 app = FastAPI()
 
 # --------------------------------------------------------
@@ -114,6 +226,102 @@ app = FastAPI()
 @app.get("/ping")
 def ping():
     return {"ok": True, "service": "runner"}
+
+# --------------------------------------------------------
+# Realizar pesquisa na plataforma do LinkedIn
+# --------------------------------------------------------
+@app.post("/processar_video")
+async def processar_video(
+    background_tasks: BackgroundTasks,
+    videos: List[UploadFile] = File(..., description="Lista de vídeos (5s cada)"),
+    audio: UploadFile = File(..., description="Áudio da narração"),
+    transicao_duracao: float = 0.5,
+    transicao_tipo: str = "fade"
+):
+    """
+    Processa múltiplos vídeos adicionando transições e áudio de narração.
+    
+    Tipos de transição disponíveis:
+    - fade (padrão)
+    - wipeleft, wiperight, wipeup, wipedown
+    - slideleft, slideright, slideup, slidedown
+    - dissolve
+    - pixelize
+    """
+    job_id = str(uuid.uuid4())
+    job_dir = TEMP_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        print(f"🎬 Iniciando processamento: {job_id}")
+        
+        # Salvar vídeos recebidos
+        video_paths = []
+        for i, video in enumerate(videos):
+            video_path = job_dir / f"video_{i:03d}.mp4"
+            with open(video_path, "wb") as f:
+                shutil.copyfileobj(video.file, f)
+            video_paths.append(str(video_path))
+        
+        print(f"✅ {len(video_paths)} vídeos salvos")
+        
+        # Salvar áudio
+        audio_path = job_dir / "audio_narracao.mp3"
+        with open(audio_path, "wb") as f:
+            shutil.copyfileobj(audio.file, f)
+        
+        print(f"✅ Áudio de narração salvo")
+        
+        # Processar
+        output_path = job_dir / "video_final.mp4"
+        
+        print(f"🔄 Processando vídeo com transições {transicao_tipo}...")
+        criar_video_com_transicoes(
+            video_paths,
+            str(audio_path),
+            str(output_path),
+            transicao_duracao=transicao_duracao,
+            transicao_tipo=transicao_tipo
+        )
+        
+        print(f"✅ Processamento concluído: {output_path}")
+        
+        # Agendar limpeza após 1 hora
+        background_tasks.add_task(cleanup_job, job_dir, 3600)
+        
+        # Retornar o vídeo
+        return FileResponse(
+            path=str(output_path),
+            media_type="video/mp4",
+            filename=f"video_final_{job_id[:8]}.mp4",
+            headers={
+                "Content-Disposition": f'attachment; filename="video_final_{job_id[:8]}.mp4"'
+            }
+        )
+    
+    except Exception as e:
+        # Limpar em caso de erro
+        print(f"❌ Erro no processamento: {str(e)}")
+        if job_dir.exists():
+            shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"Erro ao processar vídeo: {str(e)}")
+
+# --------------------------------------------------------
+# Realizar pesquisa na plataforma do LinkedIn
+# --------------------------------------------------------
+@app.get("/processar_video/status")
+def status_processamento():
+    """Retorna informações sobre o serviço de processamento de vídeo"""
+    return {
+        "ok": True,
+        "ffmpeg_disponivel": shutil.which("ffmpeg") is not None,
+        "temp_dir": str(TEMP_DIR),
+        "transicoes_disponiveis": [
+            "fade", "wipeleft", "wiperight", "wipeup", "wipedown",
+            "slideleft", "slideright", "slideup", "slidedown",
+            "dissolve", "pixelize"
+        ]
+    }
 
 # --------------------------------------------------------
 # Realizar pesquisa na plataforma do LinkedIn
