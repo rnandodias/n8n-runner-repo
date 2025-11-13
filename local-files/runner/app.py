@@ -167,10 +167,11 @@ def criar_video_com_transicoes(
             'ffmpeg', '-y',
             '-i', temp_video_sem_audio,
             '-i', audio_narracao,
-            '-c:v', 'copy',
+            '-c:v', 'libx264',  # Mudar de 'copy' para recodificar
             '-c:a', 'aac',
             '-b:a', '192k',
-            '-shortest',
+            '-vf', 'tpad=stop_mode=clone:stop_duration=30',  # Congela último frame por até 30s extras
+            '-shortest:a:0',  # Garante que o áudio complete
             output
         ]
         
