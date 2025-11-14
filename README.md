@@ -5,7 +5,6 @@ git add -A
 git commit -m "Adicionando a funcionalidade de edição de vídeo"
 git push
 
-
 ---
 
 Este repo contém um serviço **runner** (FastAPI + Playwright/Chromium) usado como sidecar do seu **n8n**.

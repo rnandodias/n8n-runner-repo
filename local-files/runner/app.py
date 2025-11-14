@@ -160,27 +160,89 @@ def criar_video_com_transicoes(
             if result.returncode != 0:
                 raise Exception(f"Erro ao juntar vídeos: {result.stderr}")
         
-        # ETAPA 2: Adicionar áudio da narração
+        # # ETAPA 2: Adicionar áudio da narração
+        # print(f"🔄 Adicionando áudio da narração...")
+        
+        # cmd = [
+        #     'ffmpeg', '-y',
+        #     '-i', temp_video_sem_audio,
+        #     '-i', audio_narracao,
+        #     '-c:v', 'libx264',  # Mudar de 'copy' para recodificar
+        #     '-c:a', 'aac',
+        #     '-b:a', '192k',
+        #     '-vf', 'tpad=stop_mode=clone:stop_duration=30',  # Congela último frame por até 30s extras
+        #     '-shortest:a:0',  # Garante que o áudio complete
+        #     output
+        # ]
+        
+        # result = subprocess.run(cmd, capture_output=True, text=True)
+        # if result.returncode != 0:
+        #     raise Exception(f"Erro ao adicionar áudio: {result.stderr}")
+        
+        # print(f"✅ Vídeo processado!")
+
+        # ETAPA 2: Adicionar áudio da narração com fade to black se necessário
         print(f"🔄 Adicionando áudio da narração...")
         
-        cmd = [
-            'ffmpeg', '-y',
-            '-i', temp_video_sem_audio,
-            '-i', audio_narracao,
-            '-c:v', 'libx264',  # Mudar de 'copy' para recodificar
-            '-c:a', 'aac',
-            '-b:a', '192k',
-            '-vf', 'tpad=stop_mode=clone:stop_duration=30',  # Congela último frame por até 30s extras
-            '-shortest:a:0',  # Garante que o áudio complete
-            output
-        ]
+        # Detectar duração do vídeo e do áudio
+        def get_duration(file_path: str) -> float:
+            cmd = [
+                'ffprobe', '-v', 'error',
+                '-show_entries', 'format=duration',
+                '-of', 'default=noprint_wrappers=1:nokey=1',
+                file_path
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            return float(result.stdout.strip())
+        
+        video_duration = get_duration(temp_video_sem_audio)
+        audio_duration = get_duration(audio_narracao)
+        
+        print(f"📊 Duração do vídeo: {video_duration:.2f}s | Áudio: {audio_duration:.2f}s")
+        
+        # Se o áudio for maior, adicionar fade e padding preto
+        if audio_duration > video_duration:
+            diff = audio_duration - video_duration
+            fade_duration = min(1.0, diff)  # Fade de até 1 segundo
+            fade_start = video_duration - fade_duration
+            
+            print(f"🎬 Adicionando fade out e {diff:.2f}s de tela preta...")
+            
+            cmd = [
+                'ffmpeg', '-y',
+                '-i', temp_video_sem_audio,
+                '-i', audio_narracao,
+                '-filter_complex',
+                f'[0:v]fade=t=out:st={fade_start}:d={fade_duration},tpad=stop_mode=add:stop_duration={diff}:color=black[v]',
+                '-map', '[v]',
+                '-map', '1:a:0',
+                '-c:v', 'libx264',
+                '-preset', 'faster',
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-pix_fmt', 'yuv420p',
+                output
+            ]
+        else:
+            # Áudio é menor ou igual, processar normalmente
+            print(f"✅ Áudio cabe no vídeo, processando normalmente...")
+            cmd = [
+                'ffmpeg', '-y',
+                '-i', temp_video_sem_audio,
+                '-i', audio_narracao,
+                '-c:v', 'copy',
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-shortest',
+                output
+            ]
         
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             raise Exception(f"Erro ao adicionar áudio: {result.stderr}")
         
         print(f"✅ Vídeo processado!")
-        
+
     finally:
         if os.path.exists(temp_video_sem_audio):
             os.remove(temp_video_sem_audio)
@@ -225,6 +287,7 @@ class VideoURLProcessingPayload(BaseModel):
     audio_url: str  # URL do áudio da narração
     transicao_duracao: float = 0.5
     transicao_tipo: str = "fade"
+    output_filename: str = "video_final.mp4"
 
 # --------------------------------------------------------
 
@@ -297,12 +360,13 @@ async def processar_video_urls(
         background_tasks.add_task(cleanup_job, job_dir, 3600)
         
         # Retornar o vídeo
+        filename = payload.output_filename if payload.output_filename.endswith('.mp4') else f"{payload.output_filename}.mp4"
         return FileResponse(
             path=str(output_path),
             media_type="video/mp4",
-            filename=f"video_final_{job_id[:8]}.mp4",
+            filename=filename,
             headers={
-                "Content-Disposition": f'attachment; filename="video_final_{job_id[:8]}.mp4"'
+                "Content-Disposition": f'attachment; filename="{filename}"'
             }
         )
     
