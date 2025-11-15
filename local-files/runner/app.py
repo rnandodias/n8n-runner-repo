@@ -13,7 +13,7 @@ import subprocess
 import shutil
 import uuid
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 import requests
 from openai import OpenAI
 
@@ -22,6 +22,41 @@ client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 # Diretório para arquivos temporários
 TEMP_DIR = Path("/tmp/video_processing")
 TEMP_DIR.mkdir(exist_ok=True)
+
+# --------------------------------------------------------
+class PesquisaPayload(BaseModel):
+    query: str
+    n_vagas: int
+
+class Payload(BaseModel):
+    nome_curso: str
+    nome_instrutor: str
+    tempo_curso: int
+
+class IDPayload(BaseModel):
+    id: str
+
+class LegendaConfig(BaseModel):
+    """Configurações customizáveis para legendas - OPCIONAL"""
+    font_size: int = 24
+    font_name: str = "Arial"
+    bold: bool = False
+    primary_colour: str = "&HFFFFFF"
+    outline_colour: str = "&H000000"
+    back_colour: str = "&H80000000"
+    outline: int = 2
+    shadow: int = 1
+    margin_v: int = 30
+
+class VideoURLProcessingPayload(BaseModel):
+    video_urls: List[str]
+    audio_url: str
+    transicao_duracao: float = 0.5
+    transicao_tipo: str = "fade"
+    output_filename: str = "video_final.mp4"
+    adicionar_legendas: bool = False
+    estilo_legenda: str = "youtube"  # "youtube", "discreto" OU "custom"
+    legenda_config: Optional[LegendaConfig] = None  # Só usa se estilo_legenda = "custom"
 
 # --------- helpers (adicione suas regras reais) ----------
 def gerar_codigo_cursos(nome_curso: str) -> str:
@@ -117,7 +152,8 @@ def criar_video_com_transicoes(
     transicao_duracao: float = 0.5,
     transicao_tipo: str = "fade",
     legendas_srt: str = None,
-    estilo_legenda: str = "youtube"
+    estilo_legenda: str = "youtube",
+    legenda_config: LegendaConfig = None
 ):
     """
     Junta vídeos com transições e adiciona áudio de narração.
@@ -186,8 +222,8 @@ def criar_video_com_transicoes(
         
         print(f"📊 Duração do vídeo: {video_duration:.2f}s | Áudio: {audio_duration:.2f}s")
         
-        # Definir estilos de legenda
-        estilos = {
+        # Definir estilos de legenda PRÉ-DEFINIDOS (mantém os originais!)
+        estilos_predefinidos = {
             "youtube": (
                 "FontName=Arial Black,"
                 "FontSize=28,"
@@ -201,25 +237,33 @@ def criar_video_com_transicoes(
             ),
             "discreto": (
                 "FontName=Arial,"
-                "FontSize=20,"
+                "FontSize=18,"
                 "PrimaryColour=&HFFFFFF,"
                 "OutlineColour=&H000000,"
                 "Outline=1,"
                 "MarginV=20"
-            ),
-            "custom": (
-                "FontName=Arial,"
-                "FontSize=24,"
-                "PrimaryColour=&HFFFFFF,"
-                "OutlineColour=&H000000,"
-                "BackColour=&H80000000,"
-                "Outline=2,"
-                "Shadow=1,"
-                "MarginV=30"
             )
         }
         
-        style = estilos.get(estilo_legenda, estilos["youtube"])
+        # Determinar o estilo a usar
+        if estilo_legenda == "custom" and legenda_config:
+            # NOVA OPÇÃO: Usar configuração customizada
+            print(f"📝 Usando configuração customizada de legenda (FontSize={legenda_config.font_size})")
+            style = (
+                f"FontName={legenda_config.font_name},"
+                f"FontSize={legenda_config.font_size},"
+                f"Bold={1 if legenda_config.bold else 0},"
+                f"PrimaryColour={legenda_config.primary_colour},"
+                f"OutlineColour={legenda_config.outline_colour},"
+                f"BackColour={legenda_config.back_colour},"
+                f"Outline={legenda_config.outline},"
+                f"Shadow={legenda_config.shadow},"
+                f"MarginV={legenda_config.margin_v}"
+            )
+        else:
+            # MANTÉM OS ESTILOS ORIGINAIS: youtube ou discreto
+            style = estilos_predefinidos.get(estilo_legenda, estilos_predefinidos["youtube"])
+            print(f"📝 Usando estilo pré-definido: {estilo_legenda}")
         
         # Se o áudio for maior, adicionar fade e padding preto
         if audio_duration > video_duration:
@@ -299,7 +343,7 @@ def criar_video_com_transicoes(
     finally:
         if os.path.exists(temp_video_sem_audio):
             os.remove(temp_video_sem_audio)
-            
+
 # =============================================================================================
 
 def gerar_legendas_srt(audio_path: str, output_srt: str):
@@ -351,28 +395,6 @@ def baixar_arquivo(url: str, destino: str):
     print(f"✅ Download concluído: {destino}")
 
 # --------------------------------------------------------
-class PesquisaPayload(BaseModel):
-    query: str
-    n_vagas: int
-
-class Payload(BaseModel):
-    nome_curso: str
-    nome_instrutor: str
-    tempo_curso: int
-
-class IDPayload(BaseModel):
-    id: str
-
-class VideoURLProcessingPayload(BaseModel):
-    video_urls: List[str]  # Lista de URLs dos vídeos
-    audio_url: str  # URL do áudio da narração
-    transicao_duracao: float = 0.5
-    transicao_tipo: str = "fade"
-    output_filename: str = "video_final.mp4"
-    adicionar_legendas: bool = False 
-    estilo_legenda: str = "youtube"  # 👈 (youtube, discreto, ou custom)
-
-# --------------------------------------------------------
 
 app = FastAPI()
 
@@ -394,16 +416,6 @@ async def processar_video_urls(
     """
     Processa vídeos a partir de URLs, adicionando transições e áudio de narração.
     Opcionalmente adiciona legendas automáticas com Whisper.
-    
-    Body JSON:
-    {
-      "video_urls": ["https://exemplo.com/video1.mp4", "https://exemplo.com/video2.mp4"],
-      "audio_url": "https://exemplo.com/audio.mp3",
-      "transicao_duracao": 0.5,
-      "transicao_tipo": "fade",
-      "adicionar_legendas": true,
-      "estilo_legenda": "youtube"
-    }
     """
     job_id = str(uuid.uuid4())
     job_dir = TEMP_DIR / job_id
@@ -445,7 +457,8 @@ async def processar_video_urls(
             transicao_duracao=payload.transicao_duracao,
             transicao_tipo=payload.transicao_tipo,
             legendas_srt=srt_path,
-            estilo_legenda=payload.estilo_legenda
+            estilo_legenda=payload.estilo_legenda,
+            legenda_config=payload.legenda_config
         )
         
         print(f"✅ Processamento concluído: {output_path}")
