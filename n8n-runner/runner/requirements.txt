@@ -8,3 +8,4 @@ tqdm
 ffmpeg-python
 python-multipart
 requests
+openai

@@ -9,6 +9,7 @@ services:
       - ALURA_PASS=${ALURA_PASS}
       - LINKEDIN_USER=${LINKEDIN_USER}
       - LINKEDIN_PASS=${LINKEDIN_PASS}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
     volumes:
       - /local-files:/files
 

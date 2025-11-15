@@ -15,6 +15,9 @@ import uuid
 from pathlib import Path
 from typing import List
 import requests
+from openai import OpenAI
+
+client = OpenAI(api_key="sua_api_key_aqui")
 
 # Diretório para arquivos temporários
 TEMP_DIR = Path("/tmp/video_processing")
@@ -94,6 +97,7 @@ def login_alura(page, user: str, password: str):
     page.click("button.btn-login.btn-principal-form-dark")
     time.sleep(10)
     print("✅ Login realizado com sucesso na Alura.")
+    
 # =============================================================================================
 
 def login_linkedin(page, user: str, password: str):
@@ -111,10 +115,13 @@ def criar_video_com_transicoes(
     audio_narracao: str,
     output: str,
     transicao_duracao: float = 0.5,
-    transicao_tipo: str = "fade"
+    transicao_tipo: str = "fade",
+    legendas_srt: str = None,
+    estilo_legenda: str = "youtube"
 ):
     """
-    Junta vídeos com transições e adiciona áudio de narração
+    Junta vídeos com transições e adiciona áudio de narração.
+    Opcionalmente adiciona legendas se legendas_srt for fornecido.
     """
     if len(videos) == 0:
         raise ValueError("Nenhum vídeo fornecido")
@@ -160,27 +167,6 @@ def criar_video_com_transicoes(
             if result.returncode != 0:
                 raise Exception(f"Erro ao juntar vídeos: {result.stderr}")
         
-        # # ETAPA 2: Adicionar áudio da narração
-        # print(f"🔄 Adicionando áudio da narração...")
-        
-        # cmd = [
-        #     'ffmpeg', '-y',
-        #     '-i', temp_video_sem_audio,
-        #     '-i', audio_narracao,
-        #     '-c:v', 'libx264',  # Mudar de 'copy' para recodificar
-        #     '-c:a', 'aac',
-        #     '-b:a', '192k',
-        #     '-vf', 'tpad=stop_mode=clone:stop_duration=30',  # Congela último frame por até 30s extras
-        #     '-shortest:a:0',  # Garante que o áudio complete
-        #     output
-        # ]
-        
-        # result = subprocess.run(cmd, capture_output=True, text=True)
-        # if result.returncode != 0:
-        #     raise Exception(f"Erro ao adicionar áudio: {result.stderr}")
-        
-        # print(f"✅ Vídeo processado!")
-
         # ETAPA 2: Adicionar áudio da narração com fade to black se necessário
         print(f"🔄 Adicionando áudio da narração...")
         
@@ -200,20 +186,67 @@ def criar_video_com_transicoes(
         
         print(f"📊 Duração do vídeo: {video_duration:.2f}s | Áudio: {audio_duration:.2f}s")
         
+        # Definir estilos de legenda
+        estilos = {
+            "youtube": (
+                "FontName=Arial Black,"
+                "FontSize=28,"
+                "Bold=1,"
+                "PrimaryColour=&HFFFFFF,"
+                "OutlineColour=&H000000,"
+                "BackColour=&H80000000,"
+                "Outline=3,"
+                "Shadow=2,"
+                "MarginV=40"
+            ),
+            "discreto": (
+                "FontName=Arial,"
+                "FontSize=20,"
+                "PrimaryColour=&HFFFFFF,"
+                "OutlineColour=&H000000,"
+                "Outline=1,"
+                "MarginV=20"
+            ),
+            "custom": (
+                "FontName=Arial,"
+                "FontSize=24,"
+                "PrimaryColour=&HFFFFFF,"
+                "OutlineColour=&H000000,"
+                "BackColour=&H80000000,"
+                "Outline=2,"
+                "Shadow=1,"
+                "MarginV=30"
+            )
+        }
+        
+        style = estilos.get(estilo_legenda, estilos["youtube"])
+        
         # Se o áudio for maior, adicionar fade e padding preto
         if audio_duration > video_duration:
             diff = audio_duration - video_duration
-            fade_duration = min(1.0, diff)  # Fade de até 1 segundo
+            fade_duration = min(1.0, diff)
             fade_start = video_duration - fade_duration
             
             print(f"🎬 Adicionando fade out e {diff:.2f}s de tela preta...")
+            
+            # Construir filter_complex com ou sem legendas
+            if legendas_srt:
+                print(f"📝 Adicionando legendas ao vídeo...")
+                # Escapar o caminho do SRT para usar no filtro
+                srt_escaped = legendas_srt.replace('\\', '/').replace(':', '\\:')
+                filter_complex = (
+                    f'[0:v]fade=t=out:st={fade_start}:d={fade_duration},'
+                    f'tpad=stop_mode=add:stop_duration={diff}:color=black,'
+                    f"subtitles={srt_escaped}:force_style='{style}'[v]"
+                )
+            else:
+                filter_complex = f'[0:v]fade=t=out:st={fade_start}:d={fade_duration},tpad=stop_mode=add:stop_duration={diff}:color=black[v]'
             
             cmd = [
                 'ffmpeg', '-y',
                 '-i', temp_video_sem_audio,
                 '-i', audio_narracao,
-                '-filter_complex',
-                f'[0:v]fade=t=out:st={fade_start}:d={fade_duration},tpad=stop_mode=add:stop_duration={diff}:color=black[v]',
+                '-filter_complex', filter_complex,
                 '-map', '[v]',
                 '-map', '1:a:0',
                 '-c:v', 'libx264',
@@ -226,16 +259,36 @@ def criar_video_com_transicoes(
         else:
             # Áudio é menor ou igual, processar normalmente
             print(f"✅ Áudio cabe no vídeo, processando normalmente...")
-            cmd = [
-                'ffmpeg', '-y',
-                '-i', temp_video_sem_audio,
-                '-i', audio_narracao,
-                '-c:v', 'copy',
-                '-c:a', 'aac',
-                '-b:a', '192k',
-                '-shortest',
-                output
-            ]
+            
+            if legendas_srt:
+                print(f"📝 Adicionando legendas ao vídeo...")
+                # Escapar o caminho do SRT
+                srt_escaped = legendas_srt.replace('\\', '/').replace(':', '\\:')
+                
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-i', temp_video_sem_audio,
+                    '-i', audio_narracao,
+                    '-vf', f"subtitles={srt_escaped}:force_style='{style}'",
+                    '-c:v', 'libx264',
+                    '-preset', 'faster',
+                    '-c:a', 'aac',
+                    '-b:a', '192k',
+                    '-pix_fmt', 'yuv420p',
+                    '-shortest',
+                    output
+                ]
+            else:
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-i', temp_video_sem_audio,
+                    '-i', audio_narracao,
+                    '-c:v', 'copy',
+                    '-c:a', 'aac',
+                    '-b:a', '192k',
+                    '-shortest',
+                    output
+                ]
         
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
@@ -247,6 +300,34 @@ def criar_video_com_transicoes(
         if os.path.exists(temp_video_sem_audio):
             os.remove(temp_video_sem_audio)
             
+# =============================================================================================
+
+def gerar_legendas_srt(audio_path: str, output_srt: str):
+    """
+    Gera arquivo SRT a partir do áudio usando Whisper
+    """
+    print(f"🎙️ Transcrevendo áudio com Whisper...")
+    
+    try:
+        with open(audio_path, "rb") as audio_file:
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                response_format="srt",
+                language="pt"
+            )
+        
+        # Salvar o SRT
+        with open(output_srt, "w", encoding="utf-8") as f:
+            f.write(transcript)
+        
+        print(f"✅ Legendas geradas: {output_srt}")
+        return output_srt
+        
+    except Exception as e:
+        print(f"❌ Erro ao gerar legendas: {str(e)}")
+        raise Exception(f"Erro ao transcrever áudio: {str(e)}")
+    
 # =============================================================================================
 
 def cleanup_job(job_dir: Path, delay_seconds: int = 3600):
@@ -288,6 +369,8 @@ class VideoURLProcessingPayload(BaseModel):
     transicao_duracao: float = 0.5
     transicao_tipo: str = "fade"
     output_filename: str = "video_final.mp4"
+    adicionar_legendas: bool = False 
+    estilo_legenda: str = "youtube"  # 👈 (youtube, discreto, ou custom)
 
 # --------------------------------------------------------
 
@@ -301,7 +384,7 @@ def ping():
     return {"ok": True, "service": "runner"}
     
 # --------------------------------------------------------
-# Realizar pesquisa na plataforma do LinkedIn
+# Realizar a edição completa de um vídeo para o YouTube
 # --------------------------------------------------------
 @app.post("/processar_video_urls")
 async def processar_video_urls(
@@ -310,13 +393,16 @@ async def processar_video_urls(
 ):
     """
     Processa vídeos a partir de URLs, adicionando transições e áudio de narração.
+    Opcionalmente adiciona legendas automáticas com Whisper.
     
     Body JSON:
     {
       "video_urls": ["https://exemplo.com/video1.mp4", "https://exemplo.com/video2.mp4"],
       "audio_url": "https://exemplo.com/audio.mp3",
       "transicao_duracao": 0.5,
-      "transicao_tipo": "fade"
+      "transicao_tipo": "fade",
+      "adicionar_legendas": true,
+      "estilo_legenda": "youtube"
     }
     """
     job_id = str(uuid.uuid4())
@@ -342,6 +428,12 @@ async def processar_video_urls(
         baixar_arquivo(payload.audio_url, str(audio_path))
         print(f"✅ Áudio baixado")
         
+        # Gerar legendas se solicitado
+        srt_path = None
+        if payload.adicionar_legendas:
+            srt_path = str(job_dir / "legendas.srt")
+            gerar_legendas_srt(str(audio_path), srt_path)
+        
         # Processar
         output_path = job_dir / "video_final.mp4"
         
@@ -351,7 +443,9 @@ async def processar_video_urls(
             str(audio_path),
             str(output_path),
             transicao_duracao=payload.transicao_duracao,
-            transicao_tipo=payload.transicao_tipo
+            transicao_tipo=payload.transicao_tipo,
+            legendas_srt=srt_path,
+            estilo_legenda=payload.estilo_legenda
         )
         
         print(f"✅ Processamento concluído: {output_path}")
@@ -383,7 +477,7 @@ async def processar_video_urls(
         raise HTTPException(status_code=500, detail=f"Erro ao processar vídeo: {str(e)}")
     
 # --------------------------------------------------------
-# Realizar pesquisa na plataforma do LinkedIn
+# Realizar a edição parcial de um vídeo para o YouTube
 # --------------------------------------------------------
 @app.post("/processar_video")
 async def processar_video(
@@ -462,7 +556,7 @@ async def processar_video(
         raise HTTPException(status_code=500, detail=f"Erro ao processar vídeo: {str(e)}")
 
 # --------------------------------------------------------
-# Realizar pesquisa na plataforma do LinkedIn
+# Realizar a verificação do status do serviço de edição de vídeo
 # --------------------------------------------------------
 @app.get("/processar_video/status")
 def status_processamento():

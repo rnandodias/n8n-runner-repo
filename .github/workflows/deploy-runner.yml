@@ -44,6 +44,7 @@ jobs:
               'ALURA_PASS=${{ secrets.ALURA_PASS }}' \
               'LINKEDIN_USER=${{ secrets.LINKEDIN_USER }}' \
               'LINKEDIN_PASS=${{ secrets.LINKEDIN_PASS }}' \
+              'OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}' \
               > /opt/n8n-runner/.env && \
             chmod 600 /opt/n8n-runner/.env
           "
