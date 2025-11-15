@@ -17,7 +17,7 @@ from typing import List
 import requests
 from openai import OpenAI
 
-client = OpenAI(api_key="sua_api_key_aqui")
+client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # Diretório para arquivos temporários
 TEMP_DIR = Path("/tmp/video_processing")
@@ -97,7 +97,7 @@ def login_alura(page, user: str, password: str):
     page.click("button.btn-login.btn-principal-form-dark")
     time.sleep(10)
     print("✅ Login realizado com sucesso na Alura.")
-    
+
 # =============================================================================================
 
 def login_linkedin(page, user: str, password: str):
