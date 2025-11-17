@@ -129,7 +129,7 @@ def login_alura(page, user: str, password: str):
     page.goto("https://cursos.alura.com.br/loginForm")
     page.fill("#login-email", user)
     page.fill("#password", password)
-    page.click("button.btn-login.btn-principal-form-dark")
+    page.click("button:has-text('Entrar')")
     time.sleep(10)
     print("✅ Login realizado com sucesso na Alura.")
 
