@@ -2,7 +2,7 @@
 
 ## Subindo Alterações
 git add -A
-git commit -m "Adicionando a funcionalidade de edição de vídeo"
+git commit -m "Ajustando app.py na tag a"
 git push
 
 ---
