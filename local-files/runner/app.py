@@ -793,7 +793,8 @@ def get_transcription_course(p: IDPayload):
             login_alura(page, user, passwd)
 
             page.goto(f"https://cursos.alura.com.br/admin/courses/v2/{p.id}")
-            link = f"https://cursos.alura.com.br{page.get_attribute('text=Ver curso', 'href')}"
+            # link = f"https://cursos.alura.com.br{page.get_attribute('text=Ver curso', 'href')}"
+            link = f"https://cursos.alura.com.br{page.locator('a:has-text(\"Ver curso\")').get_attribute('href')}"
 
             page.goto(link, timeout=60000, wait_until="domcontentloaded")
             try:
