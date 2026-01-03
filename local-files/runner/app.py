@@ -117,6 +117,7 @@ class GenerateDocxPayload(BaseModel):
     metadata: ArticleMetadata
     content: List[ContentItem]
     filename: Optional[str] = "documento.docx"
+    base_url: Optional[str] = None  # URL base para converter URLs relativas
 
 # --------- helpers (adicione suas regras reais) ----------
 def gerar_codigo_cursos(nome_curso: str) -> str:
@@ -503,6 +504,44 @@ def add_hyperlink(paragraph, text, url):
     
     return hyperlink
 
+def convert_relative_url(url: str, base_url: str) -> str:
+    """
+    Converte URL relativa para absoluta usando a URL base
+    """
+    if not url:
+        return url
+    
+    # Se já é absoluta, retorna como está
+    if url.startswith('http://') or url.startswith('https://'):
+        return url
+    
+    if not base_url:
+        return url
+    
+    try:
+        from urllib.parse import urljoin, urlparse
+        
+        # Parse da URL base
+        parsed_base = urlparse(base_url)
+        base_domain = f"{parsed_base.scheme}://{parsed_base.netloc}"
+        
+        # Se começa com /, é relativa ao domínio
+        if url.startswith('/'):
+            return base_domain + url
+        
+        # Se começa com ../ ou ./, resolve relativamente
+        if url.startswith('../') or url.startswith('./'):
+            return urljoin(base_url + '/', url)
+        
+        # Se é caminho simples (ex: assets/img.jpg), usa o diretório do artigo
+        # Remove o último segmento da URL base (nome do artigo) e adiciona a URL relativa
+        base_path = base_url.rsplit('/', 1)[0] if '/' in parsed_base.path else base_url
+        return base_path + '/' + url
+        
+    except Exception as e:
+        print(f"Erro ao converter URL {url}: {e}")
+        return url
+
 def download_image(url: str) -> Optional[BytesIO]:
     """
     Baixa uma imagem e retorna como BytesIO
@@ -734,8 +773,11 @@ async def generate_docx(payload: GenerateDocxPayload):
             
             # IMAGE
             elif item.type == "image" and item.url:
-                print(f"🖼️ Baixando imagem: {item.url[:50]}...")
-                image_data = download_image(item.url)
+                # Converte URL relativa se necessário
+                image_url = convert_relative_url(item.url, payload.base_url)
+                
+                print(f"🖼️ Baixando imagem: {image_url[:80]}...")
+                image_data = download_image(image_url)
                 
                 if image_data:
                     try:
