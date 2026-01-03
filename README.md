@@ -1,6 +1,7 @@
 # Runner Playwright para n8n (Deploy automático via GitHub Actions)
 
 ## Subindo Alterações
+
 git add -A
 git commit -m "Ajustando app.py na tag a"
 git push
