@@ -17,6 +17,16 @@ from typing import List, Optional
 import requests
 from openai import OpenAI
 
+# Imports para geração de DOCX
+import httpx
+from io import BytesIO
+from docx import Document
+from docx.shared import Pt, Inches, Cm, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.style import WD_STYLE_TYPE
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
+
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # Diretório para arquivos temporários
@@ -57,6 +67,44 @@ class VideoURLProcessingPayload(BaseModel):
     adicionar_legendas: bool = False
     estilo_legenda: str = "youtube"  # "youtube", "discreto" OU "custom"
     legenda_config: Optional[LegendaConfig] = None  # Só usa se estilo_legenda = "custom"
+
+# --------------------------------------------------------
+# Models para geração de DOCX
+# --------------------------------------------------------
+class TextSegment(BaseModel):
+    text: str
+    link: Optional[str] = None
+    bold: Optional[bool] = False
+    italic: Optional[bool] = False
+
+class ContentItem(BaseModel):
+    type: str  # heading, paragraph, list, code, image
+    # Para heading
+    level: Optional[int] = None
+    text: Optional[str] = None
+    # Para paragraph com segments
+    segments: Optional[List[TextSegment]] = None
+    # Para list
+    ordered: Optional[bool] = False
+    items: Optional[List[str]] = None
+    # Para code
+    language: Optional[str] = None
+    content: Optional[str] = None
+    # Para image
+    url: Optional[str] = None
+    alt: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+
+class ArticleMetadata(BaseModel):
+    title: Optional[str] = None
+    author: Optional[str] = None
+    publishDate: Optional[str] = None
+
+class GenerateDocxPayload(BaseModel):
+    metadata: ArticleMetadata
+    content: List[ContentItem]
+    filename: Optional[str] = "documento.docx"
 
 # --------- helpers (adicione suas regras reais) ----------
 def gerar_codigo_cursos(nome_curso: str) -> str:
@@ -394,6 +442,90 @@ def baixar_arquivo(url: str, destino: str):
     
     print(f"✅ Download concluído: {destino}")
 
+# =============================================================================================
+# Helpers para geração de DOCX
+# =============================================================================================
+
+def add_hyperlink(paragraph, text, url):
+    """
+    Adiciona um hyperlink clicável a um parágrafo do python-docx
+    """
+    part = paragraph.part
+    r_id = part.relate_to(url, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", is_external=True)
+    
+    hyperlink = OxmlElement('w:hyperlink')
+    hyperlink.set(qn('r:id'), r_id)
+    
+    new_run = OxmlElement('w:r')
+    rPr = OxmlElement('w:rPr')
+    
+    # Cor azul
+    color = OxmlElement('w:color')
+    color.set(qn('w:val'), '0066CC')
+    rPr.append(color)
+    
+    # Sublinhado
+    underline = OxmlElement('w:u')
+    underline.set(qn('w:val'), 'single')
+    rPr.append(underline)
+    
+    # Fonte
+    rFonts = OxmlElement('w:rFonts')
+    rFonts.set(qn('w:ascii'), 'Arial')
+    rFonts.set(qn('w:hAnsi'), 'Arial')
+    rPr.append(rFonts)
+    
+    # Tamanho
+    sz = OxmlElement('w:sz')
+    sz.set(qn('w:val'), '24')  # 12pt = 24 half-points
+    rPr.append(sz)
+    
+    new_run.append(rPr)
+    
+    text_elem = OxmlElement('w:t')
+    text_elem.text = text
+    new_run.append(text_elem)
+    
+    hyperlink.append(new_run)
+    paragraph._p.append(hyperlink)
+    
+    return hyperlink
+
+def download_image(url: str) -> Optional[BytesIO]:
+    """
+    Baixa uma imagem e retorna como BytesIO
+    """
+    try:
+        with httpx.Client(timeout=30, follow_redirects=True) as client:
+            response = client.get(url)
+            response.raise_for_status()
+            return BytesIO(response.content)
+    except Exception as e:
+        print(f"❌ Erro ao baixar imagem {url}: {e}")
+        return None
+
+def get_image_dimensions_from_bytes(image_bytes: BytesIO) -> tuple:
+    """
+    Obtém dimensões da imagem usando PIL se disponível, senão retorna None
+    """
+    try:
+        from PIL import Image
+        image_bytes.seek(0)
+        img = Image.open(image_bytes)
+        width, height = img.size
+        image_bytes.seek(0)
+        return width, height
+    except:
+        return None, None
+
+def set_paragraph_shading(paragraph, color: str):
+    """
+    Define cor de fundo para um parágrafo
+    """
+    shading = OxmlElement('w:shd')
+    shading.set(qn('w:fill'), color)
+    paragraph._p.get_or_add_pPr().append(shading)
+
 # --------------------------------------------------------
 
 app = FastAPI()
@@ -404,7 +536,238 @@ app = FastAPI()
 @app.get("/ping")
 def ping():
     return {"ok": True, "service": "runner"}
+
+# --------------------------------------------------------
+# Gerar documento DOCX a partir de JSON estruturado
+# --------------------------------------------------------
+@app.post("/generate-docx")
+async def generate_docx(payload: GenerateDocxPayload):
+    """
+    Gera um documento Word (.docx) a partir de JSON estruturado.
     
+    Suporta:
+    - Títulos e metadados (autor, data)
+    - Headings (h2, h3)
+    - Parágrafos com hyperlinks e formatação
+    - Listas (ordenadas e não-ordenadas)
+    - Blocos de código
+    - Imagens (baixadas automaticamente)
+    """
+    try:
+        print(f"📝 Gerando DOCX: {payload.metadata.title or 'Sem título'}")
+        
+        # Criar documento
+        doc = Document()
+        
+        # Configurar estilos padrão
+        style = doc.styles['Normal']
+        style.font.name = 'Arial'
+        style.font.size = Pt(12)
+        
+        # TÍTULO
+        if payload.metadata.title:
+            title_para = doc.add_paragraph()
+            title_run = title_para.add_run(payload.metadata.title)
+            title_run.bold = True
+            title_run.font.size = Pt(28)
+            title_run.font.name = 'Arial'
+            title_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            title_para.space_after = Pt(6)
+        
+        # METADADOS (autor e data)
+        meta_parts = []
+        if payload.metadata.author:
+            meta_parts.append(f"Por {payload.metadata.author}")
+        if payload.metadata.publishDate:
+            meta_parts.append(payload.metadata.publishDate)
+        
+        if meta_parts:
+            meta_para = doc.add_paragraph()
+            meta_run = meta_para.add_run(" • ".join(meta_parts))
+            meta_run.italic = True
+            meta_run.font.size = Pt(11)
+            meta_run.font.color.rgb = RGBColor(102, 102, 102)
+            meta_para.space_after = Pt(12)
+        
+        # Linha separadora
+        doc.add_paragraph("_" * 80)
+        
+        # PROCESSAR CONTEÚDO
+        for item in payload.content:
+            
+            # HEADING
+            if item.type == "heading" and item.text:
+                heading_para = doc.add_paragraph()
+                heading_run = heading_para.add_run(item.text)
+                heading_run.bold = True
+                heading_run.font.name = 'Arial'
+                
+                if item.level == 2:
+                    heading_run.font.size = Pt(16)
+                    heading_run.font.color.rgb = RGBColor(44, 62, 80)
+                else:
+                    heading_run.font.size = Pt(14)
+                    heading_run.font.color.rgb = RGBColor(52, 73, 94)
+                
+                heading_para.space_before = Pt(12)
+                heading_para.space_after = Pt(6)
+            
+            # PARAGRAPH
+            elif item.type == "paragraph":
+                para = doc.add_paragraph()
+                para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                
+                # Se tem segments (novo formato com links)
+                if item.segments:
+                    for seg in item.segments:
+                        if seg.link:
+                            # Adiciona hyperlink
+                            add_hyperlink(para, seg.text, seg.link)
+                        else:
+                            # Texto normal
+                            run = para.add_run(seg.text)
+                            run.font.name = 'Arial'
+                            run.font.size = Pt(12)
+                            if seg.bold:
+                                run.bold = True
+                            if seg.italic:
+                                run.italic = True
+                
+                # Formato antigo (apenas text)
+                elif item.text:
+                    run = para.add_run(item.text)
+                    run.font.name = 'Arial'
+                    run.font.size = Pt(12)
+                
+                para.space_after = Pt(6)
+            
+            # LIST
+            elif item.type == "list" and item.items:
+                for idx, li in enumerate(item.items):
+                    list_para = doc.add_paragraph()
+                    list_para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                    
+                    if item.ordered:
+                        prefix = f"{idx + 1}. "
+                    else:
+                        prefix = "• "
+                    
+                    run = list_para.add_run(f"{prefix}{li}")
+                    run.font.name = 'Arial'
+                    run.font.size = Pt(12)
+                    list_para.paragraph_format.left_indent = Inches(0.5)
+                    list_para.space_after = Pt(3)
+                
+                # Espaço após a lista
+                doc.add_paragraph()
+            
+            # CODE
+            elif item.type == "code" and item.content:
+                # Label da linguagem
+                if item.language:
+                    lang_para = doc.add_paragraph()
+                    lang_run = lang_para.add_run(f" {item.language.upper()} ")
+                    lang_run.font.name = 'Consolas'
+                    lang_run.font.size = Pt(9)
+                    lang_run.font.color.rgb = RGBColor(255, 255, 255)
+                    set_paragraph_shading(lang_para, '2d2d2d')
+                    lang_para.space_after = Pt(0)
+                
+                # Código linha por linha
+                for line in item.content.split('\n'):
+                    code_para = doc.add_paragraph()
+                    code_run = code_para.add_run(line if line else ' ')
+                    code_run.font.name = 'Consolas'
+                    code_run.font.size = Pt(10)
+                    code_run.font.color.rgb = RGBColor(51, 51, 51)
+                    set_paragraph_shading(code_para, 'F8F8F8')
+                    code_para.paragraph_format.left_indent = Inches(0.2)
+                    code_para.space_after = Pt(0)
+                    code_para.space_before = Pt(0)
+                
+                # Espaço após o código
+                doc.add_paragraph().space_after = Pt(12)
+            
+            # IMAGE
+            elif item.type == "image" and item.url:
+                print(f"🖼️ Baixando imagem: {item.url[:50]}...")
+                image_data = download_image(item.url)
+                
+                if image_data:
+                    try:
+                        # Obter dimensões originais
+                        orig_width, orig_height = get_image_dimensions_from_bytes(image_data)
+                        
+                        # Calcular largura (máximo 15cm, mantendo proporção)
+                        max_width_cm = 15
+                        
+                        if orig_width and orig_height:
+                            # Converter pixels para cm (assumindo 96 DPI)
+                            width_cm = orig_width / 96 * 2.54
+                            height_cm = orig_height / 96 * 2.54
+                            
+                            if width_cm > max_width_cm:
+                                ratio = max_width_cm / width_cm
+                                width_cm = max_width_cm
+                                height_cm = height_cm * ratio
+                            
+                            img_para = doc.add_paragraph()
+                            img_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                            run = img_para.add_run()
+                            run.add_picture(image_data, width=Cm(width_cm))
+                        else:
+                            # Sem dimensões, usa largura padrão
+                            img_para = doc.add_paragraph()
+                            img_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                            run = img_para.add_run()
+                            run.add_picture(image_data, width=Cm(max_width_cm))
+                        
+                        img_para.space_after = Pt(6)
+                        
+                        # Legenda
+                        if item.alt and len(item.alt) > 5:
+                            caption_para = doc.add_paragraph()
+                            caption_run = caption_para.add_run(item.alt)
+                            caption_run.italic = True
+                            caption_run.font.size = Pt(10)
+                            caption_run.font.color.rgb = RGBColor(102, 102, 102)
+                            caption_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                            caption_para.space_after = Pt(12)
+                        
+                        print(f"✅ Imagem adicionada")
+                        
+                    except Exception as img_error:
+                        print(f"❌ Erro ao processar imagem: {img_error}")
+                else:
+                    print(f"⚠️ Não foi possível baixar a imagem")
+        
+        # Salvar documento em memória
+        doc_buffer = BytesIO()
+        doc.save(doc_buffer)
+        doc_buffer.seek(0)
+        
+        # Gerar nome do arquivo
+        filename = payload.filename
+        if not filename.endswith('.docx'):
+            filename += '.docx'
+        
+        # Sanitizar nome do arquivo
+        filename = re.sub(r'[^a-zA-Z0-9\s\-_.]', '', filename)
+        
+        print(f"✅ DOCX gerado: {filename}")
+        
+        return Response(
+            content=doc_buffer.getvalue(),
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            }
+        )
+    
+    except Exception as e:
+        print(f"❌ Erro ao gerar DOCX: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao gerar DOCX: {str(e)}")
+
 # --------------------------------------------------------
 # Realizar a edição completa de um vídeo para o YouTube
 # --------------------------------------------------------
@@ -644,7 +1007,7 @@ def pesquisa_mercado_linkedin(p: PesquisaPayload):
                 # )
                 # links = list(dict.fromkeys(links + vagas))
 
-                # 1) aguarda o layout da lista (classe “raiz” estável)
+                # 1) aguarda o layout da lista (classe "raiz" estável)
                 # Use CSS por parte do nome em vez de XPath por header frágil
                 lista = page.locator("div.scaffold-layout__list")
                 lista.first.wait_for(state="visible", timeout=60000)

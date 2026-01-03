@@ -9,3 +9,6 @@ ffmpeg-python
 python-multipart
 requests
 openai
+python-docx
+httpx
+Pillow
