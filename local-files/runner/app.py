@@ -77,6 +77,18 @@ class TextSegment(BaseModel):
     bold: Optional[bool] = False
     italic: Optional[bool] = False
 
+class ListItemSegment(BaseModel):
+    """Segmento de texto dentro de um item de lista (pode ter link)"""
+    text: str
+    link: Optional[str] = None
+    bold: Optional[bool] = False
+    italic: Optional[bool] = False
+
+class ListItem(BaseModel):
+    """Item de lista que pode ser string simples ou ter segments com links"""
+    segments: Optional[List[ListItemSegment]] = None
+    text: Optional[str] = None  # Fallback para formato simples
+
 class ContentItem(BaseModel):
     type: str  # heading, paragraph, list, code, image
     # Para heading
@@ -86,7 +98,7 @@ class ContentItem(BaseModel):
     segments: Optional[List[TextSegment]] = None
     # Para list
     ordered: Optional[bool] = False
-    items: Optional[List[str]] = None
+    items: Optional[List] = None  # Pode ser List[str] ou List[ListItem]
     # Para code
     language: Optional[str] = None
     content: Optional[str] = None
@@ -652,9 +664,41 @@ async def generate_docx(payload: GenerateDocxPayload):
                     else:
                         prefix = "• "
                     
-                    run = list_para.add_run(f"{prefix}{li}")
-                    run.font.name = 'Arial'
-                    run.font.size = Pt(12)
+                    # Adiciona o prefixo
+                    prefix_run = list_para.add_run(prefix)
+                    prefix_run.font.name = 'Arial'
+                    prefix_run.font.size = Pt(12)
+                    
+                    # Verifica se é formato com segments (com links) ou string simples
+                    if isinstance(li, dict) and 'segments' in li:
+                        # Formato novo: lista com hyperlinks
+                        for seg in li['segments']:
+                            seg_text = seg.get('text', '')
+                            seg_link = seg.get('link')
+                            seg_bold = seg.get('bold', False)
+                            seg_italic = seg.get('italic', False)
+                            
+                            if seg_link:
+                                add_hyperlink(list_para, seg_text, seg_link)
+                            else:
+                                run = list_para.add_run(seg_text)
+                                run.font.name = 'Arial'
+                                run.font.size = Pt(12)
+                                if seg_bold:
+                                    run.bold = True
+                                if seg_italic:
+                                    run.italic = True
+                    elif isinstance(li, dict) and 'text' in li:
+                        # Formato dict simples com text
+                        run = list_para.add_run(li['text'])
+                        run.font.name = 'Arial'
+                        run.font.size = Pt(12)
+                    else:
+                        # Formato string simples (compatibilidade)
+                        run = list_para.add_run(str(li))
+                        run.font.name = 'Arial'
+                        run.font.size = Pt(12)
+                    
                     list_para.paragraph_format.left_indent = Inches(0.5)
                     list_para.space_after = Pt(3)
                 
