@@ -6,6 +6,10 @@ git add -A
 git commit -m "Ajustando app.py na tag a"
 git push
 
+OU
+
+git add -A && git commit -m "v5: blockquote, sublists, melhorias" && git push
+
 ---
 
 Este repo contém um serviço **runner** (FastAPI + Playwright/Chromium) usado como sidecar do seu **n8n**.

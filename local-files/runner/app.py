@@ -13,7 +13,7 @@ import subprocess
 import shutil
 import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Union
 import requests
 from openai import OpenAI
 
@@ -65,8 +65,8 @@ class VideoURLProcessingPayload(BaseModel):
     transicao_tipo: str = "fade"
     output_filename: str = "video_final.mp4"
     adicionar_legendas: bool = False
-    estilo_legenda: str = "youtube"  # "youtube", "discreto" OU "custom"
-    legenda_config: Optional[LegendaConfig] = None  # Só usa se estilo_legenda = "custom"
+    estilo_legenda: str = "youtube"
+    legenda_config: Optional[LegendaConfig] = None
 
 # --------------------------------------------------------
 # Models para geração de DOCX
@@ -78,19 +78,13 @@ class TextSegment(BaseModel):
     italic: Optional[bool] = False
 
 class ListItemSegment(BaseModel):
-    """Segmento de texto dentro de um item de lista (pode ter link)"""
     text: str
     link: Optional[str] = None
     bold: Optional[bool] = False
     italic: Optional[bool] = False
 
-class ListItem(BaseModel):
-    """Item de lista que pode ser string simples ou ter segments com links"""
-    segments: Optional[List[ListItemSegment]] = None
-    text: Optional[str] = None  # Fallback para formato simples
-
 class ContentItem(BaseModel):
-    type: str  # heading, paragraph, list, code, image, table
+    type: str  # heading, paragraph, list, code, image, table, blockquote
     # Para heading
     level: Optional[int] = None
     text: Optional[str] = None
@@ -98,7 +92,7 @@ class ContentItem(BaseModel):
     segments: Optional[List[TextSegment]] = None
     # Para list
     ordered: Optional[bool] = False
-    items: Optional[List] = None  # Pode ser List[str] ou List[ListItem]
+    items: Optional[List] = None  # Pode ser List[str], List[dict], ou ter sublistas
     # Para code
     language: Optional[str] = None
     content: Optional[str] = None
@@ -108,8 +102,10 @@ class ContentItem(BaseModel):
     width: Optional[int] = None
     height: Optional[int] = None
     # Para table
-    headers: Optional[List[str]] = None  # Cabeçalhos da tabela
-    rows: Optional[List[List[str]]] = None  # Linhas da tabela
+    headers: Optional[List[str]] = None
+    rows: Optional[List[List[str]]] = None
+    # Para blockquote
+    cite: Optional[str] = None  # Fonte da citação (opcional)
 
 class ArticleMetadata(BaseModel):
     title: Optional[str] = None
@@ -120,48 +116,32 @@ class GenerateDocxPayload(BaseModel):
     metadata: ArticleMetadata
     content: List[ContentItem]
     filename: Optional[str] = "documento.docx"
-    base_url: Optional[str] = None  # URL base para converter URLs relativas
+    base_url: Optional[str] = None
 
-# --------- helpers (adicione suas regras reais) ----------
+# --------- helpers ----------
 def gerar_codigo_cursos(nome_curso: str) -> str:
-    """
-    Transforma o nome do curso em um código necessário para o cadastramento do curso na plataforma da Alura
-    """
-    # Remove acentos
     nome = unidecode(nome_curso)
-    # Minúsculo
     nome = nome.lower()
-    # Remove caracteres especiais exceto espaço
     nome = re.sub(r'[^a-z0-9 ]', '', nome)
-    # Substitui espaços por -
     codigo = re.sub(r'\s+', '-', nome).strip('-')
     return codigo
-# =============================================================================================
 
 def rolar_e_coletar_vagas(page, container_locator, max_rolagens=30, pausa=1.0):
     vagas_coletadas = set()
-
     for _ in range(max_rolagens):
-        # rola o container com o handle (sem reconstruir seletor)
         container_locator.evaluate("el => el.scrollBy(0, 1000)")
         time.sleep(pausa)
-
-        # pegue links por padrão estável
-        # /jobs/view/ é o padrão de detalhe de vaga no LinkedIn
         soup = BeautifulSoup(page.content(), "html.parser")
         novos_links = {
             a["href"].split("?")[0]
             for a in soup.select('a[href^="/jobs/view/"]')
             if "href" in a.attrs
         }
-
         antes = len(vagas_coletadas)
         vagas_coletadas.update(novos_links)
         if len(vagas_coletadas) == antes:
             break
-
     return list(vagas_coletadas)
-# =============================================================================================
 
 def remover_emojis_e_simbolos(texto):
     return ''.join(
@@ -171,12 +151,7 @@ def remover_emojis_e_simbolos(texto):
     )
 
 def remover_caracteres_invisiveis(texto):
-    invisiveis = [
-        '\u200b',  # zero width space
-        '\u200c',  # zero width non-joiner
-        '\u200d',  # zero width joiner
-        '\uFEFF'   # zero width no-break space
-    ]
+    invisiveis = ['\u200b', '\u200c', '\u200d', '\uFEFF']
     for c in invisiveis:
         texto = texto.replace(c, '')
     return texto
@@ -187,7 +162,6 @@ def limpar_texto(texto):
     texto = remover_caracteres_invisiveis(texto)
     texto = remover_emojis_e_simbolos(texto)
     return texto
-# =============================================================================================
 
 def login_alura(page, user: str, password: str):
     page.goto("https://cursos.alura.com.br/loginForm")
@@ -197,8 +171,6 @@ def login_alura(page, user: str, password: str):
     time.sleep(10)
     print("✅ Login realizado com sucesso na Alura.")
 
-# =============================================================================================
-
 def login_linkedin(page, user: str, password: str):
     page.goto("https://www.linkedin.com/checkpoint/lg/sign-in-another-account")
     page.fill("input#username", user)
@@ -206,8 +178,6 @@ def login_linkedin(page, user: str, password: str):
     page.click("button[type='submit']")
     time.sleep(10)
     print("✅ Login realizado com sucesso no LinkedIn.")
-
-# =============================================================================================
 
 def criar_video_com_transicoes(
     videos: List[str],
@@ -219,40 +189,29 @@ def criar_video_com_transicoes(
     estilo_legenda: str = "youtube",
     legenda_config: LegendaConfig = None
 ):
-    """
-    Junta vídeos com transições e adiciona áudio de narração.
-    Opcionalmente adiciona legendas se legendas_srt for fornecido.
-    """
     if len(videos) == 0:
         raise ValueError("Nenhum vídeo fornecido")
     
     temp_video_sem_audio = output.replace('.mp4', '_temp.mp4')
     
     try:
-        # ETAPA 1: Juntar vídeos com transições (sem áudio)
         if len(videos) == 1:
             shutil.copy(videos[0], temp_video_sem_audio)
         else:
             print(f"🔄 Juntando {len(videos)} vídeos com transições...")
-            
             filter_parts = []
             last_label = "[0:v]"
-            
             for i in range(len(videos) - 1):
                 next_input = f"[{i+1}:v]"
                 out_label = f"[v{i}]" if i < len(videos) - 2 else "[vout]"
                 offset = (i + 1) * 5 - transicao_duracao
-                
                 xfade = f"{last_label}{next_input}xfade=transition={transicao_tipo}:duration={transicao_duracao}:offset={offset}{out_label}"
                 filter_parts.append(xfade)
                 last_label = out_label
-            
             filter_complex = ";".join(filter_parts)
-            
             cmd = ['ffmpeg', '-y']
             for video in videos:
                 cmd.extend(['-i', video])
-            
             cmd.extend([
                 '-filter_complex', filter_complex,
                 '-map', '[vout]',
@@ -262,15 +221,12 @@ def criar_video_com_transicoes(
                 '-an',
                 temp_video_sem_audio
             ])
-            
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0:
                 raise Exception(f"Erro ao juntar vídeos: {result.stderr}")
         
-        # ETAPA 2: Adicionar áudio da narração com fade to black se necessário
         print(f"🔄 Adicionando áudio da narração...")
         
-        # Detectar duração do vídeo e do áudio
         def get_duration(file_path: str) -> float:
             cmd = [
                 'ffprobe', '-v', 'error',
@@ -286,7 +242,6 @@ def criar_video_com_transicoes(
         
         print(f"📊 Duração do vídeo: {video_duration:.2f}s | Áudio: {audio_duration:.2f}s")
         
-        # Definir estilos de legenda PRÉ-DEFINIDOS (mantém os originais!)
         estilos_predefinidos = {
             "youtube": (
                 "FontName=Arial Black,"
@@ -309,9 +264,7 @@ def criar_video_com_transicoes(
             )
         }
         
-        # Determinar o estilo a usar
         if estilo_legenda == "custom" and legenda_config:
-            # NOVA OPÇÃO: Usar configuração customizada
             print(f"📝 Usando configuração customizada de legenda (FontSize={legenda_config.font_size})")
             style = (
                 f"FontName={legenda_config.font_name},"
@@ -325,22 +278,16 @@ def criar_video_com_transicoes(
                 f"MarginV={legenda_config.margin_v}"
             )
         else:
-            # MANTÉM OS ESTILOS ORIGINAIS: youtube ou discreto
             style = estilos_predefinidos.get(estilo_legenda, estilos_predefinidos["youtube"])
             print(f"📝 Usando estilo pré-definido: {estilo_legenda}")
         
-        # Se o áudio for maior, adicionar fade e padding preto
         if audio_duration > video_duration:
             diff = audio_duration - video_duration
             fade_duration = min(1.0, diff)
             fade_start = video_duration - fade_duration
-            
             print(f"🎬 Adicionando fade out e {diff:.2f}s de tela preta...")
-            
-            # Construir filter_complex com ou sem legendas
             if legendas_srt:
                 print(f"📝 Adicionando legendas ao vídeo...")
-                # Escapar o caminho do SRT para usar no filtro
                 srt_escaped = legendas_srt.replace('\\', '/').replace(':', '\\:')
                 filter_complex = (
                     f'[0:v]fade=t=out:st={fade_start}:d={fade_duration},'
@@ -349,7 +296,6 @@ def criar_video_com_transicoes(
                 )
             else:
                 filter_complex = f'[0:v]fade=t=out:st={fade_start}:d={fade_duration},tpad=stop_mode=add:stop_duration={diff}:color=black[v]'
-            
             cmd = [
                 'ffmpeg', '-y',
                 '-i', temp_video_sem_audio,
@@ -365,14 +311,10 @@ def criar_video_com_transicoes(
                 output
             ]
         else:
-            # Áudio é menor ou igual, processar normalmente
             print(f"✅ Áudio cabe no vídeo, processando normalmente...")
-            
             if legendas_srt:
                 print(f"📝 Adicionando legendas ao vídeo...")
-                # Escapar o caminho do SRT
                 srt_escaped = legendas_srt.replace('\\', '/').replace(':', '\\:')
-                
                 cmd = [
                     'ffmpeg', '-y',
                     '-i', temp_video_sem_audio,
@@ -408,14 +350,8 @@ def criar_video_com_transicoes(
         if os.path.exists(temp_video_sem_audio):
             os.remove(temp_video_sem_audio)
 
-# =============================================================================================
-
 def gerar_legendas_srt(audio_path: str, output_srt: str):
-    """
-    Gera arquivo SRT a partir do áudio usando Whisper
-    """
     print(f"🎙️ Transcrevendo áudio com Whisper...")
-    
     try:
         with open(audio_path, "rb") as audio_file:
             transcript = client.audio.transcriptions.create(
@@ -424,38 +360,26 @@ def gerar_legendas_srt(audio_path: str, output_srt: str):
                 response_format="srt",
                 language="pt"
             )
-        
-        # Salvar o SRT
         with open(output_srt, "w", encoding="utf-8") as f:
             f.write(transcript)
-        
         print(f"✅ Legendas geradas: {output_srt}")
         return output_srt
-        
     except Exception as e:
         print(f"❌ Erro ao gerar legendas: {str(e)}")
         raise Exception(f"Erro ao transcrever áudio: {str(e)}")
-    
-# =============================================================================================
 
 def cleanup_job(job_dir: Path, delay_seconds: int = 3600):
-    """Limpa arquivos temporários após um delay"""
     time.sleep(delay_seconds)
     if job_dir.exists():
         shutil.rmtree(job_dir, ignore_errors=True)
         print(f"🧹 Limpeza realizada: {job_dir}")
 
-# =============================================================================================
-
 def baixar_arquivo(url: str, destino: str):
-    """Baixa um arquivo de uma URL"""
     response = requests.get(url, stream=True, timeout=60)
     response.raise_for_status()
-    
     with open(destino, 'wb') as f:
         for chunk in response.iter_content(chunk_size=8192):
             f.write(chunk)
-    
     print(f"✅ Download concluído: {destino}")
 
 # =============================================================================================
@@ -463,92 +387,55 @@ def baixar_arquivo(url: str, destino: str):
 # =============================================================================================
 
 def add_hyperlink(paragraph, text, url):
-    """
-    Adiciona um hyperlink clicável a um parágrafo do python-docx
-    """
     part = paragraph.part
     r_id = part.relate_to(url, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", is_external=True)
-    
     hyperlink = OxmlElement('w:hyperlink')
     hyperlink.set(qn('r:id'), r_id)
-    
     new_run = OxmlElement('w:r')
     rPr = OxmlElement('w:rPr')
-    
-    # Cor azul
     color = OxmlElement('w:color')
     color.set(qn('w:val'), '0066CC')
     rPr.append(color)
-    
-    # Sublinhado
     underline = OxmlElement('w:u')
     underline.set(qn('w:val'), 'single')
     rPr.append(underline)
-    
-    # Fonte
     rFonts = OxmlElement('w:rFonts')
     rFonts.set(qn('w:ascii'), 'Arial')
     rFonts.set(qn('w:hAnsi'), 'Arial')
     rPr.append(rFonts)
-    
-    # Tamanho
     sz = OxmlElement('w:sz')
-    sz.set(qn('w:val'), '24')  # 12pt = 24 half-points
+    sz.set(qn('w:val'), '24')
     rPr.append(sz)
-    
     new_run.append(rPr)
-    
     text_elem = OxmlElement('w:t')
     text_elem.text = text
     new_run.append(text_elem)
-    
     hyperlink.append(new_run)
     paragraph._p.append(hyperlink)
-    
     return hyperlink
 
 def convert_relative_url(url: str, base_url: str) -> str:
-    """
-    Converte URL relativa para absoluta usando a URL base
-    """
     if not url:
         return url
-    
-    # Se já é absoluta, retorna como está
     if url.startswith('http://') or url.startswith('https://'):
         return url
-    
     if not base_url:
         return url
-    
     try:
         from urllib.parse import urljoin, urlparse
-        
-        # Parse da URL base
         parsed_base = urlparse(base_url)
         base_domain = f"{parsed_base.scheme}://{parsed_base.netloc}"
-        
-        # Se começa com /, é relativa ao domínio
         if url.startswith('/'):
             return base_domain + url
-        
-        # Se começa com ../ ou ./, resolve relativamente
         if url.startswith('../') or url.startswith('./'):
             return urljoin(base_url + '/', url)
-        
-        # Se é caminho simples (ex: assets/img.jpg), usa o diretório do artigo
-        # Remove o último segmento da URL base (nome do artigo) e adiciona a URL relativa
         base_path = base_url.rsplit('/', 1)[0] if '/' in parsed_base.path else base_url
         return base_path + '/' + url
-        
     except Exception as e:
         print(f"Erro ao converter URL {url}: {e}")
         return url
 
 def download_image(url: str) -> Optional[BytesIO]:
-    """
-    Baixa uma imagem e retorna como BytesIO
-    """
     try:
         with httpx.Client(timeout=30, follow_redirects=True) as client:
             response = client.get(url)
@@ -559,9 +446,6 @@ def download_image(url: str) -> Optional[BytesIO]:
         return None
 
 def get_image_dimensions_from_bytes(image_bytes: BytesIO) -> tuple:
-    """
-    Obtém dimensões da imagem usando PIL se disponível, senão retorna None
-    """
     try:
         from PIL import Image
         image_bytes.seek(0)
@@ -573,26 +457,100 @@ def get_image_dimensions_from_bytes(image_bytes: BytesIO) -> tuple:
         return None, None
 
 def set_paragraph_shading(paragraph, color: str):
-    """
-    Define cor de fundo para um parágrafo
-    """
     shading = OxmlElement('w:shd')
     shading.set(qn('w:fill'), color)
     paragraph._p.get_or_add_pPr().append(shading)
+
+def add_left_border(paragraph, color: str = '0066CC', width: int = 24):
+    """Adiciona borda esquerda ao parágrafo (para blockquotes)"""
+    pPr = paragraph._p.get_or_add_pPr()
+    pBdr = OxmlElement('w:pBdr')
+    left = OxmlElement('w:left')
+    left.set(qn('w:val'), 'single')
+    left.set(qn('w:sz'), str(width))
+    left.set(qn('w:space'), '4')
+    left.set(qn('w:color'), color)
+    pBdr.append(left)
+    pPr.append(pBdr)
+
+def process_list_item_content(doc, li, paragraph):
+    """
+    Processa o conteúdo de um item de lista, adicionando ao parágrafo.
+    """
+    if isinstance(li, dict):
+        if 'segments' in li and li['segments']:
+            for seg in li['segments']:
+                seg_text = seg.get('text', '')
+                seg_link = seg.get('link')
+                seg_bold = seg.get('bold', False)
+                seg_italic = seg.get('italic', False)
+                
+                if seg_link:
+                    add_hyperlink(paragraph, seg_text, seg_link)
+                else:
+                    run = paragraph.add_run(seg_text)
+                    run.font.name = 'Arial'
+                    run.font.size = Pt(12)
+                    if seg_bold:
+                        run.bold = True
+                    if seg_italic:
+                        run.italic = True
+        elif 'text' in li:
+            run = paragraph.add_run(li['text'])
+            run.font.name = 'Arial'
+            run.font.size = Pt(12)
+    else:
+        run = paragraph.add_run(str(li))
+        run.font.name = 'Arial'
+        run.font.size = Pt(12)
+
+def process_nested_list(doc, items, ordered=False, indent_level=0):
+    """
+    Processa uma lista, incluindo sublistas aninhadas.
+    """
+    markers = ["• ", "◦ ", "▪ ", "- "]
+    
+    for idx, li in enumerate(items):
+        # Cria o parágrafo do item
+        list_para = doc.add_paragraph()
+        list_para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        
+        # Define o prefixo
+        if ordered:
+            prefix = f"{idx + 1}. "
+        else:
+            prefix = markers[min(indent_level, len(markers) - 1)]
+        
+        # Adiciona o prefixo
+        prefix_run = list_para.add_run(prefix)
+        prefix_run.font.name = 'Arial'
+        prefix_run.font.size = Pt(12)
+        
+        # Processa o conteúdo do item
+        process_list_item_content(doc, li, list_para)
+        
+        # Aplica indentação baseada no nível
+        base_indent = 0.5
+        list_para.paragraph_format.left_indent = Inches(base_indent + (indent_level * 0.3))
+        list_para.space_after = Pt(3)
+        
+        # Verifica se o item tem uma sublista
+        if isinstance(li, dict) and 'sublist' in li and li['sublist']:
+            sublist = li['sublist']
+            sub_ordered = sublist.get('ordered', False)
+            sub_items = sublist.get('items', [])
+            if sub_items:
+                process_nested_list(doc, sub_items, sub_ordered, indent_level + 1)
 
 # --------------------------------------------------------
 
 app = FastAPI()
 
 # --------------------------------------------------------
-# Recurso de teste
-# --------------------------------------------------------
 @app.get("/ping")
 def ping():
     return {"ok": True, "service": "runner"}
 
-# --------------------------------------------------------
-# Gerar documento DOCX a partir de JSON estruturado
 # --------------------------------------------------------
 @app.post("/generate-docx")
 async def generate_docx(payload: GenerateDocxPayload):
@@ -601,20 +559,19 @@ async def generate_docx(payload: GenerateDocxPayload):
     
     Suporta:
     - Títulos e metadados (autor, data)
-    - Headings (h2, h3)
+    - Headings (h2, h3, h4)
     - Parágrafos com hyperlinks e formatação
-    - Listas (ordenadas e não-ordenadas)
+    - Listas (ordenadas e não-ordenadas, incluindo aninhadas)
     - Blocos de código
     - Imagens (baixadas automaticamente)
     - Tabelas
+    - Citações (blockquote)
     """
     try:
         print(f"📝 Gerando DOCX: {payload.metadata.title or 'Sem título'}")
         
-        # Criar documento
         doc = Document()
         
-        # Configurar estilos padrão
         style = doc.styles['Normal']
         style.font.name = 'Arial'
         style.font.size = Pt(12)
@@ -629,7 +586,7 @@ async def generate_docx(payload: GenerateDocxPayload):
             title_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
             title_para.space_after = Pt(6)
         
-        # METADADOS (autor e data)
+        # METADADOS
         meta_parts = []
         if payload.metadata.author:
             meta_parts.append(f"Por {payload.metadata.author}")
@@ -644,7 +601,6 @@ async def generate_docx(payload: GenerateDocxPayload):
             meta_run.font.color.rgb = RGBColor(102, 102, 102)
             meta_para.space_after = Pt(12)
         
-        # Linha separadora
         doc.add_paragraph("_" * 80)
         
         # PROCESSAR CONTEÚDO
@@ -660,9 +616,12 @@ async def generate_docx(payload: GenerateDocxPayload):
                 if item.level == 2:
                     heading_run.font.size = Pt(16)
                     heading_run.font.color.rgb = RGBColor(44, 62, 80)
-                else:
+                elif item.level == 3:
                     heading_run.font.size = Pt(14)
                     heading_run.font.color.rgb = RGBColor(52, 73, 94)
+                else:
+                    heading_run.font.size = Pt(13)
+                    heading_run.font.color.rgb = RGBColor(60, 80, 100)
                 
                 heading_para.space_before = Pt(12)
                 heading_para.space_after = Pt(6)
@@ -672,14 +631,11 @@ async def generate_docx(payload: GenerateDocxPayload):
                 para = doc.add_paragraph()
                 para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
                 
-                # Se tem segments (novo formato com links)
                 if item.segments:
                     for seg in item.segments:
                         if seg.link:
-                            # Adiciona hyperlink
                             add_hyperlink(para, seg.text, seg.link)
                         else:
-                            # Texto normal
                             run = para.add_run(seg.text)
                             run.font.name = 'Arial'
                             run.font.size = Pt(12)
@@ -687,8 +643,6 @@ async def generate_docx(payload: GenerateDocxPayload):
                                 run.bold = True
                             if seg.italic:
                                 run.italic = True
-                
-                # Formato antigo (apenas text)
                 elif item.text:
                     run = para.add_run(item.text)
                     run.font.name = 'Arial'
@@ -696,61 +650,67 @@ async def generate_docx(payload: GenerateDocxPayload):
                 
                 para.space_after = Pt(6)
             
-            # LIST
+            # LIST (com suporte a aninhamento)
             elif item.type == "list" and item.items:
-                for idx, li in enumerate(item.items):
-                    list_para = doc.add_paragraph()
-                    list_para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-                    
-                    if item.ordered:
-                        prefix = f"{idx + 1}. "
-                    else:
-                        prefix = "• "
-                    
-                    # Adiciona o prefixo
-                    prefix_run = list_para.add_run(prefix)
-                    prefix_run.font.name = 'Arial'
-                    prefix_run.font.size = Pt(12)
-                    
-                    # Verifica se é formato com segments (com links) ou string simples
-                    if isinstance(li, dict) and 'segments' in li:
-                        # Formato novo: lista com hyperlinks
-                        for seg in li['segments']:
-                            seg_text = seg.get('text', '')
-                            seg_link = seg.get('link')
-                            seg_bold = seg.get('bold', False)
-                            seg_italic = seg.get('italic', False)
-                            
-                            if seg_link:
-                                add_hyperlink(list_para, seg_text, seg_link)
-                            else:
-                                run = list_para.add_run(seg_text)
-                                run.font.name = 'Arial'
-                                run.font.size = Pt(12)
-                                if seg_bold:
-                                    run.bold = True
-                                if seg_italic:
-                                    run.italic = True
-                    elif isinstance(li, dict) and 'text' in li:
-                        # Formato dict simples com text
-                        run = list_para.add_run(li['text'])
-                        run.font.name = 'Arial'
-                        run.font.size = Pt(12)
-                    else:
-                        # Formato string simples (compatibilidade)
-                        run = list_para.add_run(str(li))
-                        run.font.name = 'Arial'
-                        run.font.size = Pt(12)
-                    
-                    list_para.paragraph_format.left_indent = Inches(0.5)
-                    list_para.space_after = Pt(3)
-                
-                # Espaço após a lista
+                process_nested_list(doc, item.items, item.ordered or False, indent_level=0)
                 doc.add_paragraph()
+            
+            # BLOCKQUOTE
+            elif item.type == "blockquote":
+                print(f"💬 Adicionando citação...")
+                
+                # Texto da citação
+                if item.segments:
+                    quote_para = doc.add_paragraph()
+                    quote_para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                    
+                    for seg in item.segments:
+                        if seg.link:
+                            add_hyperlink(quote_para, seg.text, seg.link)
+                        else:
+                            run = quote_para.add_run(seg.text)
+                            run.font.name = 'Arial'
+                            run.font.size = Pt(12)
+                            run.italic = True
+                            run.font.color.rgb = RGBColor(85, 85, 85)
+                            if seg.bold:
+                                run.bold = True
+                    
+                    add_left_border(quote_para, color='0066CC', width=24)
+                    quote_para.paragraph_format.left_indent = Inches(0.3)
+                    quote_para.space_before = Pt(6)
+                    quote_para.space_after = Pt(6)
+                    
+                elif item.text:
+                    quote_para = doc.add_paragraph()
+                    quote_para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                    
+                    run = quote_para.add_run(item.text)
+                    run.font.name = 'Arial'
+                    run.font.size = Pt(12)
+                    run.italic = True
+                    run.font.color.rgb = RGBColor(85, 85, 85)
+                    
+                    add_left_border(quote_para, color='0066CC', width=24)
+                    quote_para.paragraph_format.left_indent = Inches(0.3)
+                    quote_para.space_before = Pt(6)
+                    quote_para.space_after = Pt(6)
+                
+                # Fonte da citação (se houver)
+                if item.cite:
+                    cite_para = doc.add_paragraph()
+                    cite_run = cite_para.add_run(f"— {item.cite}")
+                    cite_run.font.name = 'Arial'
+                    cite_run.font.size = Pt(10)
+                    cite_run.italic = True
+                    cite_run.font.color.rgb = RGBColor(120, 120, 120)
+                    cite_para.paragraph_format.left_indent = Inches(0.5)
+                    cite_para.space_after = Pt(12)
+                else:
+                    doc.add_paragraph().space_after = Pt(6)
             
             # CODE
             elif item.type == "code" and item.content:
-                # Label da linguagem
                 if item.language:
                     lang_para = doc.add_paragraph()
                     lang_run = lang_para.add_run(f" {item.language.upper()} ")
@@ -760,7 +720,6 @@ async def generate_docx(payload: GenerateDocxPayload):
                     set_paragraph_shading(lang_para, '2d2d2d')
                     lang_para.space_after = Pt(0)
                 
-                # Código linha por linha
                 for line in item.content.split('\n'):
                     code_para = doc.add_paragraph()
                     code_run = code_para.add_run(line if line else ' ')
@@ -772,41 +731,31 @@ async def generate_docx(payload: GenerateDocxPayload):
                     code_para.space_after = Pt(0)
                     code_para.space_before = Pt(0)
                 
-                # Espaço após o código
                 doc.add_paragraph().space_after = Pt(12)
             
             # IMAGE
             elif item.type == "image" and item.url:
-                # Converte URL relativa se necessário
                 image_url = convert_relative_url(item.url, payload.base_url)
-                
                 print(f"🖼️ Baixando imagem: {image_url[:80]}...")
                 image_data = download_image(image_url)
                 
                 if image_data:
                     try:
-                        # Obter dimensões originais
                         orig_width, orig_height = get_image_dimensions_from_bytes(image_data)
-                        
-                        # Calcular largura (máximo 15cm, mantendo proporção)
                         max_width_cm = 15
                         
                         if orig_width and orig_height:
-                            # Converter pixels para cm (assumindo 96 DPI)
                             width_cm = orig_width / 96 * 2.54
                             height_cm = orig_height / 96 * 2.54
-                            
                             if width_cm > max_width_cm:
                                 ratio = max_width_cm / width_cm
                                 width_cm = max_width_cm
                                 height_cm = height_cm * ratio
-                            
                             img_para = doc.add_paragraph()
                             img_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
                             run = img_para.add_run()
                             run.add_picture(image_data, width=Cm(width_cm))
                         else:
-                            # Sem dimensões, usa largura padrão
                             img_para = doc.add_paragraph()
                             img_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
                             run = img_para.add_run()
@@ -814,7 +763,6 @@ async def generate_docx(payload: GenerateDocxPayload):
                         
                         img_para.space_after = Pt(6)
                         
-                        # Legenda
                         if item.alt and len(item.alt) > 5:
                             caption_para = doc.add_paragraph()
                             caption_run = caption_para.add_run(item.alt)
@@ -825,7 +773,6 @@ async def generate_docx(payload: GenerateDocxPayload):
                             caption_para.space_after = Pt(12)
                         
                         print(f"✅ Imagem adicionada")
-                        
                     except Exception as img_error:
                         print(f"❌ Erro ao processar imagem: {img_error}")
                 else:
@@ -835,57 +782,47 @@ async def generate_docx(payload: GenerateDocxPayload):
             elif item.type == "table" and item.headers and item.rows:
                 print(f"📊 Adicionando tabela com {len(item.rows)} linhas...")
                 
-                # Criar tabela
                 num_cols = len(item.headers)
-                num_rows = len(item.rows) + 1  # +1 para o cabeçalho
+                num_rows = len(item.rows) + 1
                 
                 table = doc.add_table(rows=num_rows, cols=num_cols)
                 table.style = 'Table Grid'
                 
-                # Cabeçalho
                 header_row = table.rows[0]
                 for idx, header_text in enumerate(item.headers):
                     cell = header_row.cells[idx]
                     cell.text = header_text
-                    # Formatação do cabeçalho
                     for paragraph in cell.paragraphs:
                         for run in paragraph.runs:
                             run.bold = True
                             run.font.name = 'Arial'
                             run.font.size = Pt(11)
-                    # Fundo cinza para cabeçalho
                     shading = OxmlElement('w:shd')
                     shading.set(qn('w:fill'), 'E0E0E0')
                     cell._tc.get_or_add_tcPr().append(shading)
                 
-                # Linhas de dados
                 for row_idx, row_data in enumerate(item.rows):
                     row = table.rows[row_idx + 1]
                     for col_idx, cell_text in enumerate(row_data):
-                        if col_idx < num_cols:  # Garantir que não exceda colunas
+                        if col_idx < num_cols:
                             cell = row.cells[col_idx]
                             cell.text = str(cell_text) if cell_text else ""
-                            # Formatação das células
                             for paragraph in cell.paragraphs:
                                 for run in paragraph.runs:
                                     run.font.name = 'Arial'
                                     run.font.size = Pt(10)
                 
-                # Espaço após a tabela
                 doc.add_paragraph().space_after = Pt(12)
                 print(f"✅ Tabela adicionada")
         
-        # Salvar documento em memória
+        # Salvar documento
         doc_buffer = BytesIO()
         doc.save(doc_buffer)
         doc_buffer.seek(0)
         
-        # Gerar nome do arquivo
         filename = payload.filename
         if not filename.endswith('.docx'):
             filename += '.docx'
-        
-        # Sanitizar nome do arquivo
         filename = re.sub(r'[^a-zA-Z0-9\s\-_.]', '', filename)
         
         print(f"✅ DOCX gerado: {filename}")
@@ -903,17 +840,14 @@ async def generate_docx(payload: GenerateDocxPayload):
         raise HTTPException(status_code=500, detail=f"Erro ao gerar DOCX: {str(e)}")
 
 # --------------------------------------------------------
-# Realizar a edição completa de um vídeo para o YouTube
+# Demais endpoints (vídeo, LinkedIn, Alura) permanecem iguais
 # --------------------------------------------------------
+
 @app.post("/processar_video_urls")
 async def processar_video_urls(
     payload: VideoURLProcessingPayload,
     background_tasks: BackgroundTasks
 ):
-    """
-    Processa vídeos a partir de URLs, adicionando transições e áudio de narração.
-    Opcionalmente adiciona legendas automáticas com Whisper.
-    """
     job_id = str(uuid.uuid4())
     job_dir = TEMP_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -922,7 +856,6 @@ async def processar_video_urls(
         print(f"🎬 Iniciando processamento: {job_id}")
         print(f"📥 Baixando {len(payload.video_urls)} vídeos...")
         
-        # Baixar vídeos
         video_paths = []
         for i, url in enumerate(payload.video_urls):
             video_path = job_dir / f"video_{i:03d}.mp4"
@@ -931,19 +864,16 @@ async def processar_video_urls(
         
         print(f"✅ {len(video_paths)} vídeos baixados")
         
-        # Baixar áudio
         print(f"📥 Baixando áudio da narração...")
         audio_path = job_dir / "audio_narracao.mp3"
         baixar_arquivo(payload.audio_url, str(audio_path))
         print(f"✅ Áudio baixado")
         
-        # Gerar legendas se solicitado
         srt_path = None
         if payload.adicionar_legendas:
             srt_path = str(job_dir / "legendas.srt")
             gerar_legendas_srt(str(audio_path), srt_path)
         
-        # Processar
         output_path = job_dir / "video_final.mp4"
         
         print(f"🔄 Processando vídeo com transições {payload.transicao_tipo}...")
@@ -960,10 +890,8 @@ async def processar_video_urls(
         
         print(f"✅ Processamento concluído: {output_path}")
         
-        # Agendar limpeza após 1 hora
         background_tasks.add_task(cleanup_job, job_dir, 3600)
         
-        # Retornar o vídeo
         filename = payload.output_filename if payload.output_filename.endswith('.mp4') else f"{payload.output_filename}.mp4"
         return FileResponse(
             path=str(output_path),
@@ -985,10 +913,7 @@ async def processar_video_urls(
         if job_dir.exists():
             shutil.rmtree(job_dir, ignore_errors=True)
         raise HTTPException(status_code=500, detail=f"Erro ao processar vídeo: {str(e)}")
-    
-# --------------------------------------------------------
-# Realizar a edição parcial de um vídeo para o YouTube
-# --------------------------------------------------------
+
 @app.post("/processar_video")
 async def processar_video(
     background_tasks: BackgroundTasks,
@@ -997,16 +922,6 @@ async def processar_video(
     transicao_duracao: float = 0.5,
     transicao_tipo: str = "fade"
 ):
-    """
-    Processa múltiplos vídeos adicionando transições e áudio de narração.
-    
-    Tipos de transição disponíveis:
-    - fade (padrão)
-    - wipeleft, wiperight, wipeup, wipedown
-    - slideleft, slideright, slideup, slidedown
-    - dissolve
-    - pixelize
-    """
     job_id = str(uuid.uuid4())
     job_dir = TEMP_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -1014,7 +929,6 @@ async def processar_video(
     try:
         print(f"🎬 Iniciando processamento: {job_id}")
         
-        # Salvar vídeos recebidos
         video_paths = []
         for i, video in enumerate(videos):
             video_path = job_dir / f"video_{i:03d}.mp4"
@@ -1024,14 +938,12 @@ async def processar_video(
         
         print(f"✅ {len(video_paths)} vídeos salvos")
         
-        # Salvar áudio
         audio_path = job_dir / "audio_narracao.mp3"
         with open(audio_path, "wb") as f:
             shutil.copyfileobj(audio.file, f)
         
         print(f"✅ Áudio de narração salvo")
         
-        # Processar
         output_path = job_dir / "video_final.mp4"
         
         print(f"🔄 Processando vídeo com transições {transicao_tipo}...")
@@ -1045,10 +957,8 @@ async def processar_video(
         
         print(f"✅ Processamento concluído: {output_path}")
         
-        # Agendar limpeza após 1 hora
         background_tasks.add_task(cleanup_job, job_dir, 3600)
         
-        # Retornar o vídeo
         return FileResponse(
             path=str(output_path),
             media_type="video/mp4",
@@ -1059,18 +969,13 @@ async def processar_video(
         )
     
     except Exception as e:
-        # Limpar em caso de erro
         print(f"❌ Erro no processamento: {str(e)}")
         if job_dir.exists():
             shutil.rmtree(job_dir, ignore_errors=True)
         raise HTTPException(status_code=500, detail=f"Erro ao processar vídeo: {str(e)}")
 
-# --------------------------------------------------------
-# Realizar a verificação do status do serviço de edição de vídeo
-# --------------------------------------------------------
 @app.get("/processar_video/status")
 def status_processamento():
-    """Retorna informações sobre o serviço de processamento de vídeo"""
     return {
         "ok": True,
         "ffmpeg_disponivel": shutil.which("ffmpeg") is not None,
@@ -1082,16 +987,9 @@ def status_processamento():
         ]
     }
 
-# --------------------------------------------------------
-# Realizar pesquisa na plataforma do LinkedIn
-# --------------------------------------------------------
 @app.post("/pesquisa_mercado_linkedin")
 def pesquisa_mercado_linkedin(p: PesquisaPayload):
-    params = {
-        "keywords": p.query,
-        "location": "Brasil",
-        "start": 0
-    }
+    params = {"keywords": p.query, "location": "Brasil", "start": 0}
     user = os.environ.get("LINKEDIN_USER")
     passwd = os.environ.get("LINKEDIN_PASS")
 
@@ -1102,138 +1000,90 @@ def pesquisa_mercado_linkedin(p: PesquisaPayload):
         with sync_playwright() as pw:
             browser = pw.chromium.launch(
                 headless=True,
-                args=[
-                    "--no-sandbox", "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--disable-software-rasterizer",
-                    "--disable-blink-features=AutomationControlled"
-                ]
+                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage",
+                      "--disable-gpu", "--disable-software-rasterizer", "--disable-blink-features=AutomationControlled"]
             )
-
             page = browser.new_page()
             login_linkedin(page, user, passwd)
-
             links = []
             for i in tqdm(range(0, int(p.n_vagas), 25)):
                 params["start"] = i
                 page.goto(f"https://www.linkedin.com/jobs/search/?{urlencode(params)}")
-
                 lista = page.locator("div.scaffold-layout__list")
                 lista.first.wait_for(state="visible", timeout=60000)
-
                 results = page.locator("div.jobs-search-results-list").first
                 container = results if results.count() > 0 else lista.first
-
                 page.wait_for_selector('a[href^="/jobs/view/"]', timeout=60000)
-
                 vagas = rolar_e_coletar_vagas(page, container, max_rolagens=10, pausa=1.2)
                 links = list(dict.fromkeys(links + vagas))
-
             print(f"{len(links)} vagas coletadas")
-
             page.goto("https://www.linkedin.com/m/logout/")
             page.wait_for_timeout(2000)
             browser.close()
 
         payload = {"ok": True, "mensagem": "Busca finalizada com sucesso!", "data": links}
         body = json.dumps(payload, ensure_ascii=False)
-
-        return Response(
-            content=body,
-            media_type="application/json",
-            headers={"Connection": "close"}
-        )
+        return Response(content=body, media_type="application/json", headers={"Connection": "close"})
     
     except PlaywrightTimeout as e:
         with open("/tmp/lnkd-debug.html", "w", encoding="utf-8") as f:
             f.write(page.content())
         raise HTTPException(status_code=500, detail=f"Timeout Playwright: {e}")
-    
     except Exception as e:
         with open("/tmp/lnkd-debug.html", "w", encoding="utf-8") as f:
             f.write(page.content())
         raise HTTPException(status_code=500, detail=f"Falha Playwright: {e}")
 
-# --------------------------------------------------------
-# Cadastrar um curso na plataforma da Alura
-# --------------------------------------------------------
 @app.post("/cadastrar_curso")
 def cadastrar(p: Payload):
     instrutores_path = "/files/data/instrutores.json"
     if not os.path.exists(instrutores_path):
         raise HTTPException(status_code=500, detail=f"Arquivo não encontrado: {instrutores_path}")
-
     with open(instrutores_path, "r", encoding="utf-8") as f:
         instrutores = json.load(f)
-
     autor_valor = next((a["valor"] for a in instrutores if a["nome"] == p.nome_instrutor), None)
     if not autor_valor:
         raise HTTPException(status_code=404, detail="Instrutor não localizado.")
-
     user = os.environ.get("ALURA_USER")
     passwd = os.environ.get("ALURA_PASS")
-
     if not user or not passwd:
         raise HTTPException(status_code=500, detail="Defina ALURA_USER e ALURA_PASS no ambiente do runner.")
-
     code = gerar_codigo_cursos(p.nome_curso)
-
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True)
             page = browser.new_page()
             login_alura(page, user, passwd)
-
             page.goto("https://cursos.alura.com.br/admin/v2/newCourse")
-
             page.fill('input[name="name"]', p.nome_curso)
             page.fill('input[name="code"]', code)
             page.fill('input[name="metaTitle"]', '')
             page.fill('input[name="estimatedTimeToFinish"]', str(int(p.tempo_curso)))
             page.fill('input[name="metadescription"]', 'Será atualizado pelo(a) instrutor(a).')
-
             page.select_option('select[name="authors"]', value=autor_valor)
-
             print("Curso cadastrado com sucesso! Apenas um teste")
-
             browser.close()
-
         payload = {"ok": True, "mensagem": "Curso cadastrado com sucesso!", "code": code}
         body = json.dumps(payload, ensure_ascii=False)
-
-        return Response(
-            content=body,
-            media_type="application/json",
-            headers={"Connection": "close"}
-        )
-    
+        return Response(content=body, media_type="application/json", headers={"Connection": "close"})
     except PlaywrightTimeout as e:
         raise HTTPException(status_code=500, detail=f"Timeout Playwright: {e}")
-    
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Falha Playwright: {e}")
 
-# --------------------------------------------------------
-# Obter a transcrição de um curso na plataforma da Alura
-# --------------------------------------------------------
 @app.post("/get_transcription_course")
 def get_transcription_course(p: IDPayload):
     user = os.environ.get("ALURA_USER")
     passwd = os.environ.get("ALURA_PASS")
-
     if not user or not passwd:
         raise HTTPException(status_code=500, detail="Defina ALURA_USER e ALURA_PASS no ambiente do runner.")
-
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True)
             page = browser.new_page()
             login_alura(page, user, passwd)
-
             page.goto(f"https://cursos.alura.com.br/admin/courses/v2/{p.id}")
             link = "https://cursos.alura.com.br" + page.locator('a:has-text("Ver curso")').get_attribute('href')
-
             page.goto(link, timeout=60000, wait_until="domcontentloaded")
             try:
                 page.wait_for_selector(".courseSectionList", timeout=60000)
@@ -1241,9 +1091,7 @@ def get_transcription_course(p: IDPayload):
                 soup = BeautifulSoup(html, "html.parser")
             except TimeoutError:
                 print(f"[AVISO] Timeout em {link}. Pulando...")
-
             nome = soup.find("h1").strong.get_text()
-
             videos = []
             for item in soup.find_all("li", class_="courseSection-listItem"):
                 aula = f"https://cursos.alura.com.br{item.find('a', class_='courseSectionList-section')['href']}"
@@ -1257,7 +1105,6 @@ def get_transcription_course(p: IDPayload):
                 except TimeoutError:
                     print(f"[AVISO] Timeout em {aula}. Pulando...")
                     continue
-
             transcricoes = []
             for index, video in enumerate(videos):
                 page.goto(video, timeout=60000, wait_until="domcontentloaded")
@@ -1269,29 +1116,15 @@ def get_transcription_course(p: IDPayload):
                     transcription = soup_video.find("section", id="transcription").get_text()
                     transcription = transcription.replace("Transcrição", f"Vídeo {index + 1} -{title}")
                     texto_limpo = limpar_texto(transcription)
-                    transcricoes.append(texto_limpo)                        
+                    transcricoes.append(texto_limpo)
                 except TimeoutError:
                     print(f"[AVISO] Timeout em {video}. Pulando...")
-                    transcricoes.append(None)                        
-
+                    transcricoes.append(None)
             browser.close()
-            
-        payload = {
-            "id": p.id,
-            "nome": nome,
-            "link": link,
-            "transcricao": transcricoes
-        }
+        payload = {"id": p.id, "nome": nome, "link": link, "transcricao": transcricoes}
         body = json.dumps(payload, ensure_ascii=False)
-
-        return Response(
-            content=body,
-            media_type="application/json",
-            headers={"Connection": "close"}
-        )
-        
+        return Response(content=body, media_type="application/json", headers={"Connection": "close"})
     except PlaywrightTimeout as e:
         raise HTTPException(status_code=500, detail=f"Timeout Playwright: {e}")
-    
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Falha Playwright: {e}")
