@@ -2,8 +2,8 @@ import os, json, time, re
 from unidecode import unidecode
 import unicodedata
 from tqdm import tqdm
-from bs4 import BeautifulSoup
-from urllib.parse import urlencode
+from bs4 import BeautifulSoup, NavigableString
+from urllib.parse import urlencode, urljoin, urlparse
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks
 from fastapi.responses import JSONResponse, Response, FileResponse
 from pydantic import BaseModel
@@ -34,6 +34,8 @@ TEMP_DIR = Path("/tmp/video_processing")
 TEMP_DIR.mkdir(exist_ok=True)
 
 # --------------------------------------------------------
+# Models para requests
+# --------------------------------------------------------
 class PesquisaPayload(BaseModel):
     query: str
     n_vagas: int
@@ -47,7 +49,6 @@ class IDPayload(BaseModel):
     id: str
 
 class LegendaConfig(BaseModel):
-    """Configurações customizáveis para legendas - OPCIONAL"""
     font_size: int = 24
     font_name: str = "Arial"
     bold: bool = False
@@ -77,35 +78,22 @@ class TextSegment(BaseModel):
     bold: Optional[bool] = False
     italic: Optional[bool] = False
 
-class ListItemSegment(BaseModel):
-    text: str
-    link: Optional[str] = None
-    bold: Optional[bool] = False
-    italic: Optional[bool] = False
-
 class ContentItem(BaseModel):
-    type: str  # heading, paragraph, list, code, image, table, blockquote
-    # Para heading
+    type: str  # heading, paragraph, list, code, image, table, blockquote, youtube, podcast
     level: Optional[int] = None
     text: Optional[str] = None
-    # Para paragraph com segments
     segments: Optional[List[TextSegment]] = None
-    # Para list
     ordered: Optional[bool] = False
-    items: Optional[List] = None  # Pode ser List[str], List[dict], ou ter sublistas
-    # Para code
+    items: Optional[List] = None
     language: Optional[str] = None
     content: Optional[str] = None
-    # Para image
     url: Optional[str] = None
     alt: Optional[str] = None
     width: Optional[int] = None
     height: Optional[int] = None
-    # Para table
     headers: Optional[List[str]] = None
     rows: Optional[List[List[str]]] = None
-    # Para blockquote
-    cite: Optional[str] = None  # Fonte da citação (opcional)
+    cite: Optional[str] = None
 
 class ArticleMetadata(BaseModel):
     title: Optional[str] = None
@@ -118,7 +106,12 @@ class GenerateDocxPayload(BaseModel):
     filename: Optional[str] = "documento.docx"
     base_url: Optional[str] = None
 
-# --------- helpers ----------
+class ExtractArticlePayload(BaseModel):
+    url: str
+
+# --------------------------------------------------------
+# Helpers gerais
+# --------------------------------------------------------
 def gerar_codigo_cursos(nome_curso: str) -> str:
     nome = unidecode(nome_curso)
     nome = nome.lower()
@@ -179,208 +172,691 @@ def login_linkedin(page, user: str, password: str):
     time.sleep(10)
     print("✅ Login realizado com sucesso no LinkedIn.")
 
-def criar_video_com_transicoes(
-    videos: List[str],
-    audio_narracao: str,
-    output: str,
-    transicao_duracao: float = 0.5,
-    transicao_tipo: str = "fade",
-    legendas_srt: str = None,
-    estilo_legenda: str = "youtube",
-    legenda_config: LegendaConfig = None
-):
-    if len(videos) == 0:
-        raise ValueError("Nenhum vídeo fornecido")
+# =============================================================================================
+# EXTRATOR DE ARTIGOS ALURA - BeautifulSoup (SEM IA!)
+# 100% determinístico, custo ZERO, ~1-2 segundos por artigo
+# =============================================================================================
+
+def is_banner_or_promotional(element):
+    """
+    Verifica se um elemento é um banner promocional ou propaganda.
+    Retorna True se deve ser IGNORADO.
+    """
+    # Verifica se é ou está dentro de um link promocional
+    parent_a = element.find_parent('a') if element.name != 'a' else element
+    if parent_a and parent_a.get('href'):
+        href = parent_a.get('href', '')
+        promo_patterns = [
+            '/escola-', '/formacao-', '/planos-', '/curso-online',
+            '/empresas', 'cursos.alura.com.br/loginForm',
+            'utm_source=blog', 'utm_medium=banner', 'utm_campaign=',
+            '/carreiras/', '/pos-tech'
+        ]
+        for pattern in promo_patterns:
+            if pattern in href:
+                return True
     
-    temp_video_sem_audio = output.replace('.mp4', '_temp.mp4')
+    # Verifica src da imagem
+    if element.name == 'img':
+        src = element.get('src', '').lower()
+        alt = element.get('alt', '').lower()
+        
+        # Padrões de banner
+        if any(x in src for x in ['matricula-escola', 'saiba-mais', 'banner']):
+            return True
+        if 'banner' in alt:
+            return True
     
-    try:
-        if len(videos) == 1:
-            shutil.copy(videos[0], temp_video_sem_audio)
+    return False
+
+def is_site_chrome(element):
+    """
+    Verifica se um elemento faz parte do "chrome" do site (header, nav, footer, etc.)
+    e não do conteúdo do artigo.
+    """
+    # Elementos de navegação e estrutura do site
+    if element.find_parent(['nav', 'footer', 'aside']):
+        return True
+    
+    # Header do site (não o h1 do artigo)
+    parent_header = element.find_parent('header')
+    if parent_header:
+        # Se o header contém links de navegação, é chrome do site
+        if parent_header.find('a', href=lambda x: x and '/carreiras' in x):
+            return True
+    
+    return False
+
+def is_decorative_element(element):
+    """
+    Verifica se é um elemento decorativo (ícones, logos, setas, etc.)
+    """
+    if element.name == 'img':
+        src = element.get('src', '').lower()
+        alt = element.get('alt', '').lower()
+        
+        decorative_patterns = [
+            '/assets/img/header/', '/assets/img/home/', '/assets/img/caelum',
+            'arrow-', 'return-', 'logo', 'icon', 'avatar', '.svg',
+            'gravatar.com/avatar'
+        ]
+        
+        for pattern in decorative_patterns:
+            if pattern in src:
+                # Exceção: imagens do CDN de conteúdo (infográficos)
+                if 'cdn-wcsm.alura.com.br' in src and 'assets/' in src:
+                    return False  # É conteúdo do artigo
+                return True
+        
+        # Imagens muito pequenas (provavelmente ícones)
+        if element.get('width') and int(element.get('width', 100)) < 50:
+            return True
+    
+    return False
+
+def is_related_articles_section(element):
+    """
+    Verifica se estamos na seção "Leia também" ou artigos relacionados
+    """
+    # Verifica o texto dos headings anteriores
+    prev_siblings = element.find_all_previous(['h2', 'h3', 'h4'])
+    for sib in prev_siblings[:3]:  # Checa os 3 headings anteriores
+        text = sib.get_text(strip=True).lower()
+        if any(x in text for x in ['leia também', 'artigos relacionados', 'veja outros artigos']):
+            return True
+    
+    return False
+
+def extract_text_with_formatting(element, base_url):
+    """
+    Extrai texto de um elemento preservando formatação (links, bold, italic).
+    Retorna lista de segments.
+    """
+    segments = []
+    
+    for child in element.children:
+        if isinstance(child, NavigableString):
+            text = str(child)
+            if text.strip():
+                segments.append({"text": text})
+        
+        elif child.name == 'a':
+            href = child.get('href', '')
+            text = child.get_text()
+            if text.strip():
+                # Converte URL relativa para absoluta
+                if href and not href.startswith('http') and not href.startswith('#'):
+                    href = urljoin(base_url, href)
+                segments.append({"text": text, "link": href if href else None})
+        
+        elif child.name in ['strong', 'b']:
+            text = child.get_text()
+            if text.strip():
+                # Verifica se tem link dentro
+                inner_a = child.find('a')
+                if inner_a:
+                    href = inner_a.get('href', '')
+                    if href and not href.startswith('http'):
+                        href = urljoin(base_url, href)
+                    segments.append({"text": text, "link": href, "bold": True})
+                else:
+                    segments.append({"text": text, "bold": True})
+        
+        elif child.name in ['em', 'i']:
+            text = child.get_text()
+            if text.strip():
+                segments.append({"text": text, "italic": True})
+        
+        elif child.name == 'code':
+            text = child.get_text()
+            if text.strip():
+                segments.append({"text": f"`{text}`", "bold": True})
+        
+        elif child.name in ['span', 'mark', 'u']:
+            # Processa recursivamente
+            inner_segments = extract_text_with_formatting(child, base_url)
+            segments.extend(inner_segments)
+        
+        elif child.name == 'br':
+            segments.append({"text": "\n"})
+        
+        elif child.name in ['sup', 'sub']:
+            text = child.get_text()
+            if text.strip():
+                segments.append({"text": text})
+        
         else:
-            print(f"🔄 Juntando {len(videos)} vídeos com transições...")
-            filter_parts = []
-            last_label = "[0:v]"
-            for i in range(len(videos) - 1):
-                next_input = f"[{i+1}:v]"
-                out_label = f"[v{i}]" if i < len(videos) - 2 else "[vout]"
-                offset = (i + 1) * 5 - transicao_duracao
-                xfade = f"{last_label}{next_input}xfade=transition={transicao_tipo}:duration={transicao_duracao}:offset={offset}{out_label}"
-                filter_parts.append(xfade)
-                last_label = out_label
-            filter_complex = ";".join(filter_parts)
-            cmd = ['ffmpeg', '-y']
-            for video in videos:
-                cmd.extend(['-i', video])
-            cmd.extend([
-                '-filter_complex', filter_complex,
-                '-map', '[vout]',
-                '-c:v', 'libx264',
-                '-preset', 'faster',
-                '-pix_fmt', 'yuv420p',
-                '-an',
-                temp_video_sem_audio
-            ])
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                raise Exception(f"Erro ao juntar vídeos: {result.stderr}")
+            # Outros elementos: extrai texto simples
+            text = child.get_text()
+            if text.strip():
+                segments.append({"text": text})
+    
+    return segments
+
+def process_list_items(ul_or_ol, base_url, ordered=False):
+    """
+    Processa itens de lista, incluindo listas aninhadas.
+    """
+    items = []
+    
+    for li in ul_or_ol.find_all('li', recursive=False):
+        item = {}
         
-        print(f"🔄 Adicionando áudio da narração...")
+        # Verifica se tem sublista
+        sublist = li.find(['ul', 'ol'], recursive=False)
         
-        def get_duration(file_path: str) -> float:
-            cmd = [
-                'ffprobe', '-v', 'error',
-                '-show_entries', 'format=duration',
-                '-of', 'default=noprint_wrappers=1:nokey=1',
-                file_path
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            return float(result.stdout.strip())
-        
-        video_duration = get_duration(temp_video_sem_audio)
-        audio_duration = get_duration(audio_narracao)
-        
-        print(f"📊 Duração do vídeo: {video_duration:.2f}s | Áudio: {audio_duration:.2f}s")
-        
-        estilos_predefinidos = {
-            "youtube": (
-                "FontName=Arial Black,"
-                "FontSize=28,"
-                "Bold=1,"
-                "PrimaryColour=&HFFFFFF,"
-                "OutlineColour=&H000000,"
-                "BackColour=&H80000000,"
-                "Outline=3,"
-                "Shadow=2,"
-                "MarginV=40"
-            ),
-            "discreto": (
-                "FontName=Arial,"
-                "FontSize=18,"
-                "PrimaryColour=&HFFFFFF,"
-                "OutlineColour=&H000000,"
-                "Outline=1,"
-                "MarginV=20"
-            )
-        }
-        
-        if estilo_legenda == "custom" and legenda_config:
-            print(f"📝 Usando configuração customizada de legenda (FontSize={legenda_config.font_size})")
-            style = (
-                f"FontName={legenda_config.font_name},"
-                f"FontSize={legenda_config.font_size},"
-                f"Bold={1 if legenda_config.bold else 0},"
-                f"PrimaryColour={legenda_config.primary_colour},"
-                f"OutlineColour={legenda_config.outline_colour},"
-                f"BackColour={legenda_config.back_colour},"
-                f"Outline={legenda_config.outline},"
-                f"Shadow={legenda_config.shadow},"
-                f"MarginV={legenda_config.margin_v}"
-            )
+        if sublist:
+            # Faz cópia do li e remove sublista para pegar só o texto
+            li_text_parts = []
+            for child in li.children:
+                if child.name not in ['ul', 'ol']:
+                    if isinstance(child, NavigableString):
+                        li_text_parts.append(str(child))
+                    else:
+                        li_text_parts.append(child.get_text())
+            
+            text_content = ''.join(li_text_parts).strip()
+            
+            if text_content:
+                # Verifica se tem links
+                links_in_li = []
+                for a in li.find_all('a', recursive=False):
+                    links_in_li.append({
+                        "text": a.get_text(),
+                        "link": urljoin(base_url, a.get('href', ''))
+                    })
+                
+                if links_in_li:
+                    item['segments'] = extract_text_with_formatting(li, base_url)
+                else:
+                    item['text'] = text_content
+            
+            # Processa sublista
+            sub_ordered = sublist.name == 'ol'
+            sub_items = process_list_items(sublist, base_url, sub_ordered)
+            if sub_items:
+                item['sublist'] = {
+                    'ordered': sub_ordered,
+                    'items': sub_items
+                }
         else:
-            style = estilos_predefinidos.get(estilo_legenda, estilos_predefinidos["youtube"])
-            print(f"📝 Usando estilo pré-definido: {estilo_legenda}")
+            # Sem sublista - processa normalmente
+            segments = extract_text_with_formatting(li, base_url)
+            if segments:
+                # Simplifica se for texto simples sem formatação
+                if len(segments) == 1 and 'link' not in segments[0] and 'bold' not in segments[0] and 'italic' not in segments[0]:
+                    item['text'] = segments[0].get('text', '').strip()
+                else:
+                    item['segments'] = segments
         
-        if audio_duration > video_duration:
-            diff = audio_duration - video_duration
-            fade_duration = min(1.0, diff)
-            fade_start = video_duration - fade_duration
-            print(f"🎬 Adicionando fade out e {diff:.2f}s de tela preta...")
-            if legendas_srt:
-                print(f"📝 Adicionando legendas ao vídeo...")
-                srt_escaped = legendas_srt.replace('\\', '/').replace(':', '\\:')
-                filter_complex = (
-                    f'[0:v]fade=t=out:st={fade_start}:d={fade_duration},'
-                    f'tpad=stop_mode=add:stop_duration={diff}:color=black,'
-                    f"subtitles={srt_escaped}:force_style='{style}'[v]"
+        if item:
+            items.append(item)
+    
+    return items
+
+def extract_table(table_tag):
+    """
+    Extrai dados de uma tabela HTML.
+    """
+    headers = []
+    rows = []
+    
+    # Tenta pegar headers do thead
+    thead = table_tag.find('thead')
+    if thead:
+        header_row = thead.find('tr')
+        if header_row:
+            headers = [th.get_text(strip=True) for th in header_row.find_all(['th', 'td'])]
+    
+    # Se não tem thead, pega da primeira linha com th
+    if not headers:
+        first_row = table_tag.find('tr')
+        if first_row:
+            ths = first_row.find_all('th')
+            if ths:
+                headers = [th.get_text(strip=True) for th in ths]
+    
+    # Pega as linhas de dados
+    tbody = table_tag.find('tbody') or table_tag
+    for tr in tbody.find_all('tr'):
+        # Pula a linha de headers se já processamos
+        if tr.find('th') and not rows and headers:
+            continue
+        
+        cells = [td.get_text(strip=True) for td in tr.find_all(['td', 'th'])]
+        if cells and any(c for c in cells):
+            rows.append(cells)
+    
+    return headers, rows
+
+def detect_youtube_url(text_or_href):
+    """
+    Detecta e extrai URL do YouTube de texto ou href.
+    """
+    patterns = [
+        r'(https?://(?:www\.)?youtube\.com/watch\?v=[\w-]+)',
+        r'(https?://youtu\.be/[\w-]+)',
+        r'(https?://(?:www\.)?youtube\.com/embed/[\w-]+)'
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text_or_href)
+        if match:
+            return match.group(1)
+    
+    return None
+
+def detect_podcast_url(text_or_href):
+    """
+    Detecta URL de podcast (Spotify, Hipsters, etc.)
+    """
+    podcast_patterns = [
+        r'(https?://open\.spotify\.com/[^\s]+)',
+        r'(https?://(?:www\.)?hipsters\.tech/[^\s]+)',
+        r'(https?://(?:www\.)?hipsters\.network/[^\s]+)',
+        r'(spotify:[\w:]+)'  # URI do Spotify
+    ]
+    
+    for pattern in podcast_patterns:
+        match = re.search(pattern, text_or_href)
+        if match:
+            return match.group(1)
+    
+    return None
+
+def extract_article_content(html: str, base_url: str) -> dict:
+    """
+    Extrai conteúdo estruturado de um artigo da Alura usando BeautifulSoup.
+    100% determinístico, sem IA!
+    
+    Retorna:
+    {
+        "metadata": {"title": str, "author": str, "publishDate": str},
+        "content": [lista de elementos],
+        "filename": str,
+        "base_url": str,
+        "stats": {contagem por tipo}
+    }
+    """
+    soup = BeautifulSoup(html, 'html.parser')
+    
+    # Remove scripts, styles, e elementos não visíveis
+    for tag in soup.find_all(['script', 'style', 'noscript', 'svg', 'iframe']):
+        tag.decompose()
+    
+    metadata = {
+        'title': None,
+        'author': None,
+        'publishDate': None
+    }
+    content = []
+    processed_elements = set()
+    
+    # ===== EXTRAI METADADOS =====
+    
+    # Título - primeiro h1 da página
+    h1 = soup.find('h1')
+    if h1:
+        metadata['title'] = h1.get_text(strip=True)
+        processed_elements.add(id(h1))
+    
+    # Autor e Data - geralmente estão próximos um do outro após o h1
+    # Padrão Alura: imagem do autor + nome + data
+    
+    # Procura por padrão de data DD/MM/YYYY
+    date_pattern = re.compile(r'\d{2}/\d{2}/\d{4}')
+    page_text = soup.get_text()
+    date_match = date_pattern.search(page_text)
+    if date_match:
+        metadata['publishDate'] = date_match.group()
+    
+    # Procura autor - geralmente está em um container com a imagem do avatar
+    # Na Alura, o autor aparece perto do h1 e antes do conteúdo
+    author_candidates = []
+    
+    # Procura por padrões de autor na estrutura
+    for img in soup.find_all('img'):
+        src = img.get('src', '')
+        alt = img.get('alt', '')
+        
+        # Avatar do gravatar ou imagem de perfil
+        if 'gravatar.com' in src or 'gnarususercontent.com.br' in src:
+            if alt and len(alt) > 2 and not any(x in alt.lower() for x in ['logo', 'banner', 'alura']):
+                author_candidates.append(alt)
+    
+    if author_candidates:
+        metadata['author'] = author_candidates[0]
+    
+    # ===== LOCALIZA ÁREA DE CONTEÚDO PRINCIPAL =====
+    
+    # Tenta encontrar o container principal do artigo
+    # Na Alura, o conteúdo geralmente vem após o h1 e metadados
+    
+    main_content = soup.find('body') or soup
+    
+    # Flag para ignorar conteúdo após "Leia também"
+    stop_processing = False
+    
+    # ===== EXTRAI CONTEÚDO =====
+    
+    # Processa elementos na ordem em que aparecem
+    for element in main_content.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'p', 'ul', 'ol', 
+                                           'blockquote', 'pre', 'table', 'img', 'figure']):
+        # Pula elementos já processados
+        elem_id = id(element)
+        if elem_id in processed_elements:
+            continue
+        processed_elements.add(elem_id)
+        
+        # Ignora elementos do chrome do site
+        if is_site_chrome(element):
+            continue
+        
+        # Ignora banners e promoções
+        if is_banner_or_promotional(element):
+            continue
+        
+        # Ignora elementos decorativos
+        if is_decorative_element(element):
+            continue
+        
+        # Verifica se chegamos na seção "Leia também"
+        if element.name in ['h2', 'h3']:
+            text = element.get_text(strip=True).lower()
+            if any(x in text for x in ['leia também', 'artigos relacionados', 'veja outros artigos']):
+                stop_processing = True
+        
+        if stop_processing:
+            continue
+        
+        # ===== H1 (já processado como título, pula) =====
+        if element.name == 'h1':
+            continue
+        
+        # ===== HEADINGS (h2, h3, h4, h5) =====
+        if element.name in ['h2', 'h3', 'h4', 'h5']:
+            text = element.get_text(strip=True)
+            if text and len(text) > 1:
+                # Ignora headings que são do sumário/TOC
+                if element.find_parent(class_=lambda x: x and 'toc' in x.lower() if x else False):
+                    continue
+                
+                level = int(element.name[1])
+                content.append({
+                    'type': 'heading',
+                    'level': level,
+                    'text': text
+                })
+        
+        # ===== PARÁGRAFOS =====
+        elif element.name == 'p':
+            text = element.get_text(strip=True)
+            if not text:
+                continue
+            
+            # Verifica se contém embed de YouTube
+            yt_url = None
+            for a in element.find_all('a'):
+                href = a.get('href', '')
+                yt_url = detect_youtube_url(href)
+                if yt_url:
+                    break
+            
+            # Verifica texto solto com URL do YouTube
+            if not yt_url:
+                yt_url = detect_youtube_url(text)
+            
+            if yt_url:
+                content.append({
+                    'type': 'youtube',
+                    'url': yt_url,
+                    'text': text if len(text) < 200 else ''
+                })
+                continue
+            
+            # Verifica se contém embed de Podcast
+            podcast_url = None
+            for a in element.find_all('a'):
+                href = a.get('href', '')
+                podcast_url = detect_podcast_url(href)
+                if podcast_url:
+                    break
+            
+            if not podcast_url:
+                podcast_url = detect_podcast_url(text)
+            
+            if podcast_url:
+                content.append({
+                    'type': 'podcast',
+                    'url': podcast_url,
+                    'text': text if len(text) < 200 else ''
+                })
+                continue
+            
+            # Parágrafo normal
+            segments = extract_text_with_formatting(element, base_url)
+            if segments:
+                # Simplifica se for texto simples
+                has_formatting = any(
+                    seg.get('link') or seg.get('bold') or seg.get('italic') 
+                    for seg in segments
                 )
-            else:
-                filter_complex = f'[0:v]fade=t=out:st={fade_start}:d={fade_duration},tpad=stop_mode=add:stop_duration={diff}:color=black[v]'
-            cmd = [
-                'ffmpeg', '-y',
-                '-i', temp_video_sem_audio,
-                '-i', audio_narracao,
-                '-filter_complex', filter_complex,
-                '-map', '[v]',
-                '-map', '1:a:0',
-                '-c:v', 'libx264',
-                '-preset', 'faster',
-                '-c:a', 'aac',
-                '-b:a', '192k',
-                '-pix_fmt', 'yuv420p',
-                output
-            ]
-        else:
-            print(f"✅ Áudio cabe no vídeo, processando normalmente...")
-            if legendas_srt:
-                print(f"📝 Adicionando legendas ao vídeo...")
-                srt_escaped = legendas_srt.replace('\\', '/').replace(':', '\\:')
-                cmd = [
-                    'ffmpeg', '-y',
-                    '-i', temp_video_sem_audio,
-                    '-i', audio_narracao,
-                    '-vf', f"subtitles={srt_escaped}:force_style='{style}'",
-                    '-c:v', 'libx264',
-                    '-preset', 'faster',
-                    '-c:a', 'aac',
-                    '-b:a', '192k',
-                    '-pix_fmt', 'yuv420p',
-                    '-shortest',
-                    output
-                ]
-            else:
-                cmd = [
-                    'ffmpeg', '-y',
-                    '-i', temp_video_sem_audio,
-                    '-i', audio_narracao,
-                    '-c:v', 'copy',
-                    '-c:a', 'aac',
-                    '-b:a', '192k',
-                    '-shortest',
-                    output
-                ]
+                
+                if not has_formatting and len(segments) == 1:
+                    content.append({
+                        'type': 'paragraph',
+                        'text': segments[0].get('text', '').strip()
+                    })
+                else:
+                    content.append({
+                        'type': 'paragraph',
+                        'segments': segments
+                    })
         
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise Exception(f"Erro ao adicionar áudio: {result.stderr}")
+        # ===== LISTAS =====
+        elif element.name in ['ul', 'ol']:
+            # Pula se é sublista (será processada pelo pai)
+            if element.find_parent(['ul', 'ol']):
+                continue
+            
+            ordered = element.name == 'ol'
+            items = process_list_items(element, base_url, ordered)
+            
+            if items:
+                content.append({
+                    'type': 'list',
+                    'ordered': ordered,
+                    'items': items
+                })
         
-        print(f"✅ Vídeo processado!")
-
-    finally:
-        if os.path.exists(temp_video_sem_audio):
-            os.remove(temp_video_sem_audio)
-
-def gerar_legendas_srt(audio_path: str, output_srt: str):
-    print(f"🎙️ Transcrevendo áudio com Whisper...")
-    try:
-        with open(audio_path, "rb") as audio_file:
-            transcript = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-                response_format="srt",
-                language="pt"
-            )
-        with open(output_srt, "w", encoding="utf-8") as f:
-            f.write(transcript)
-        print(f"✅ Legendas geradas: {output_srt}")
-        return output_srt
-    except Exception as e:
-        print(f"❌ Erro ao gerar legendas: {str(e)}")
-        raise Exception(f"Erro ao transcrever áudio: {str(e)}")
-
-def cleanup_job(job_dir: Path, delay_seconds: int = 3600):
-    time.sleep(delay_seconds)
-    if job_dir.exists():
-        shutil.rmtree(job_dir, ignore_errors=True)
-        print(f"🧹 Limpeza realizada: {job_dir}")
-
-def baixar_arquivo(url: str, destino: str):
-    response = requests.get(url, stream=True, timeout=60)
-    response.raise_for_status()
-    with open(destino, 'wb') as f:
-        for chunk in response.iter_content(chunk_size=8192):
-            f.write(chunk)
-    print(f"✅ Download concluído: {destino}")
+        # ===== BLOCKQUOTES =====
+        elif element.name == 'blockquote':
+            # Verifica se é embed de podcast/youtube disfarçado
+            inner_text = element.get_text(strip=True)
+            
+            yt_url = detect_youtube_url(inner_text)
+            if yt_url:
+                # Extrai título se houver
+                title = ''
+                first_line = inner_text.split('\n')[0] if '\n' in inner_text else inner_text
+                if len(first_line) < 200:
+                    title = first_line
+                
+                content.append({
+                    'type': 'youtube',
+                    'url': yt_url,
+                    'text': title
+                })
+                continue
+            
+            podcast_url = detect_podcast_url(inner_text)
+            if podcast_url:
+                content.append({
+                    'type': 'podcast',
+                    'url': podcast_url,
+                    'text': inner_text[:200] if len(inner_text) > 200 else inner_text
+                })
+                continue
+            
+            # Blockquote normal (citação)
+            segments = extract_text_with_formatting(element, base_url)
+            
+            # Verifica se tem cite
+            cite_tag = element.find('cite')
+            cite = cite_tag.get_text(strip=True) if cite_tag else None
+            
+            if segments:
+                blockquote_item = {'type': 'blockquote'}
+                
+                has_formatting = any(
+                    seg.get('link') or seg.get('bold') or seg.get('italic')
+                    for seg in segments
+                )
+                
+                if not has_formatting and len(segments) == 1:
+                    blockquote_item['text'] = segments[0].get('text', '').strip()
+                else:
+                    blockquote_item['segments'] = segments
+                
+                if cite:
+                    blockquote_item['cite'] = cite
+                
+                content.append(blockquote_item)
+        
+        # ===== CÓDIGO =====
+        elif element.name == 'pre':
+            code_tag = element.find('code')
+            if code_tag:
+                code_content = code_tag.get_text()
+                
+                # Detecta linguagem pela classe
+                classes = code_tag.get('class', [])
+                language = None
+                for cls in classes:
+                    if isinstance(cls, str):
+                        if cls.startswith('language-'):
+                            language = cls.replace('language-', '')
+                            break
+                        elif cls in ['python', 'javascript', 'java', 'sql', 'bash', 
+                                    'html', 'css', 'json', 'typescript', 'jsx', 'ruby',
+                                    'go', 'rust', 'php', 'csharp', 'kotlin', 'swift']:
+                            language = cls
+                            break
+                
+                content.append({
+                    'type': 'code',
+                    'language': language,
+                    'content': code_content
+                })
+            else:
+                # Pre sem code
+                content.append({
+                    'type': 'code',
+                    'content': element.get_text()
+                })
+        
+        # ===== TABELAS =====
+        elif element.name == 'table':
+            headers, rows = extract_table(element)
+            if headers or rows:
+                content.append({
+                    'type': 'table',
+                    'headers': headers,
+                    'rows': rows
+                })
+        
+        # ===== IMAGENS =====
+        elif element.name == 'img':
+            src = element.get('src', '')
+            if not src:
+                continue
+            
+            # Ignora novamente banners (double-check)
+            if is_banner_or_promotional(element):
+                continue
+            
+            if is_decorative_element(element):
+                continue
+            
+            # Converte URL relativa
+            if not src.startswith('http'):
+                src = urljoin(base_url, src)
+            
+            alt = element.get('alt', '')
+            
+            # Pega dimensões se disponíveis
+            width = element.get('width')
+            height = element.get('height')
+            
+            img_item = {
+                'type': 'image',
+                'url': src,
+                'alt': alt
+            }
+            
+            if width:
+                try:
+                    img_item['width'] = int(width)
+                except:
+                    pass
+            if height:
+                try:
+                    img_item['height'] = int(height)
+                except:
+                    pass
+            
+            content.append(img_item)
+        
+        # ===== FIGURE (imagem com caption) =====
+        elif element.name == 'figure':
+            img = element.find('img')
+            if img:
+                src = img.get('src', '')
+                if not src:
+                    continue
+                
+                if not src.startswith('http'):
+                    src = urljoin(base_url, src)
+                
+                # Pega caption do figcaption
+                figcaption = element.find('figcaption')
+                alt = figcaption.get_text(strip=True) if figcaption else img.get('alt', '')
+                
+                content.append({
+                    'type': 'image',
+                    'url': src,
+                    'alt': alt
+                })
+                
+                # Marca como processado para não duplicar
+                processed_elements.add(id(img))
+    
+    # ===== PÓS-PROCESSAMENTO =====
+    
+    # Remove itens vazios
+    content = [item for item in content if item]
+    
+    # ===== GERA ESTATÍSTICAS =====
+    stats = {}
+    for item in content:
+        item_type = item.get('type', 'unknown')
+        stats[item_type] = stats.get(item_type, 0) + 1
+    
+    # ===== GERA FILENAME =====
+    filename = metadata.get('title', 'documento') or 'documento'
+    filename = unidecode(filename)  # Remove acentos
+    filename = re.sub(r'[^a-zA-Z0-9\s-]', '', filename)
+    filename = re.sub(r'\s+', '-', filename).strip('-')
+    filename = filename[:80]  # Limita tamanho
+    filename = f"{filename}.docx"
+    
+    return {
+        'metadata': metadata,
+        'content': content,
+        'filename': filename,
+        'base_url': base_url,
+        'stats': stats
+    }
 
 # =============================================================================================
 # Helpers para geração de DOCX
@@ -421,19 +897,7 @@ def convert_relative_url(url: str, base_url: str) -> str:
         return url
     if not base_url:
         return url
-    try:
-        from urllib.parse import urljoin, urlparse
-        parsed_base = urlparse(base_url)
-        base_domain = f"{parsed_base.scheme}://{parsed_base.netloc}"
-        if url.startswith('/'):
-            return base_domain + url
-        if url.startswith('../') or url.startswith('./'):
-            return urljoin(base_url + '/', url)
-        base_path = base_url.rsplit('/', 1)[0] if '/' in parsed_base.path else base_url
-        return base_path + '/' + url
-    except Exception as e:
-        print(f"Erro ao converter URL {url}: {e}")
-        return url
+    return urljoin(base_url, url)
 
 def download_image(url: str) -> Optional[BytesIO]:
     try:
@@ -462,7 +926,6 @@ def set_paragraph_shading(paragraph, color: str):
     paragraph._p.get_or_add_pPr().append(shading)
 
 def add_left_border(paragraph, color: str = '0066CC', width: int = 24):
-    """Adiciona borda esquerda ao parágrafo (para blockquotes)"""
     pPr = paragraph._p.get_or_add_pPr()
     pBdr = OxmlElement('w:pBdr')
     left = OxmlElement('w:left')
@@ -473,10 +936,8 @@ def add_left_border(paragraph, color: str = '0066CC', width: int = 24):
     pBdr.append(left)
     pPr.append(pBdr)
 
-def process_list_item_content(doc, li, paragraph):
-    """
-    Processa o conteúdo de um item de lista, adicionando ao parágrafo.
-    """
+def process_list_item_content_docx(doc, li, paragraph):
+    """Processa o conteúdo de um item de lista no DOCX."""
     if isinstance(li, dict):
         if 'segments' in li and li['segments']:
             for seg in li['segments']:
@@ -504,68 +965,240 @@ def process_list_item_content(doc, li, paragraph):
         run.font.name = 'Arial'
         run.font.size = Pt(12)
 
-def process_nested_list(doc, items, ordered=False, indent_level=0):
-    """
-    Processa uma lista, incluindo sublistas aninhadas.
-    """
+def process_nested_list_docx(doc, items, ordered=False, indent_level=0):
+    """Processa lista aninhada no DOCX."""
     markers = ["• ", "◦ ", "▪ ", "- "]
     
     for idx, li in enumerate(items):
-        # Cria o parágrafo do item
         list_para = doc.add_paragraph()
         list_para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
         
-        # Define o prefixo
         if ordered:
             prefix = f"{idx + 1}. "
         else:
             prefix = markers[min(indent_level, len(markers) - 1)]
         
-        # Adiciona o prefixo
         prefix_run = list_para.add_run(prefix)
         prefix_run.font.name = 'Arial'
         prefix_run.font.size = Pt(12)
         
-        # Processa o conteúdo do item
-        process_list_item_content(doc, li, list_para)
+        process_list_item_content_docx(doc, li, list_para)
         
-        # Aplica indentação baseada no nível
         base_indent = 0.5
         list_para.paragraph_format.left_indent = Inches(base_indent + (indent_level * 0.3))
         list_para.space_after = Pt(3)
         
-        # Verifica se o item tem uma sublista
         if isinstance(li, dict) and 'sublist' in li and li['sublist']:
             sublist = li['sublist']
             sub_ordered = sublist.get('ordered', False)
             sub_items = sublist.get('items', [])
             if sub_items:
-                process_nested_list(doc, sub_items, sub_ordered, indent_level + 1)
+                process_nested_list_docx(doc, sub_items, sub_ordered, indent_level + 1)
 
 # --------------------------------------------------------
+# Video helpers
+# --------------------------------------------------------
+def criar_video_com_transicoes(videos, audio_narracao, output, transicao_duracao=0.5, transicao_tipo="fade", legendas_srt=None, estilo_legenda="youtube", legenda_config=None):
+    if len(videos) == 0:
+        raise ValueError("Nenhum vídeo fornecido")
+    
+    temp_video_sem_audio = output.replace('.mp4', '_temp.mp4')
+    
+    try:
+        if len(videos) == 1:
+            shutil.copy(videos[0], temp_video_sem_audio)
+        else:
+            print(f"🔄 Juntando {len(videos)} vídeos com transições...")
+            filter_parts = []
+            last_label = "[0:v]"
+            for i in range(len(videos) - 1):
+                next_input = f"[{i+1}:v]"
+                out_label = f"[v{i}]" if i < len(videos) - 2 else "[vout]"
+                offset = (i + 1) * 5 - transicao_duracao
+                xfade = f"{last_label}{next_input}xfade=transition={transicao_tipo}:duration={transicao_duracao}:offset={offset}{out_label}"
+                filter_parts.append(xfade)
+                last_label = out_label
+            filter_complex = ";".join(filter_parts)
+            cmd = ['ffmpeg', '-y']
+            for video in videos:
+                cmd.extend(['-i', video])
+            cmd.extend(['-filter_complex', filter_complex, '-map', '[vout]', '-c:v', 'libx264', '-preset', 'faster', '-pix_fmt', 'yuv420p', '-an', temp_video_sem_audio])
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise Exception(f"Erro ao juntar vídeos: {result.stderr}")
+        
+        print(f"🔄 Adicionando áudio da narração...")
+        
+        def get_duration(file_path):
+            cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', file_path]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            return float(result.stdout.strip())
+        
+        video_duration = get_duration(temp_video_sem_audio)
+        audio_duration = get_duration(audio_narracao)
+        
+        estilos_predefinidos = {
+            "youtube": "FontName=Arial Black,FontSize=28,Bold=1,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,BackColour=&H80000000,Outline=3,Shadow=2,MarginV=40",
+            "discreto": "FontName=Arial,FontSize=18,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,Outline=1,MarginV=20"
+        }
+        
+        if estilo_legenda == "custom" and legenda_config:
+            style = f"FontName={legenda_config.font_name},FontSize={legenda_config.font_size},Bold={1 if legenda_config.bold else 0},PrimaryColour={legenda_config.primary_colour},OutlineColour={legenda_config.outline_colour},BackColour={legenda_config.back_colour},Outline={legenda_config.outline},Shadow={legenda_config.shadow},MarginV={legenda_config.margin_v}"
+        else:
+            style = estilos_predefinidos.get(estilo_legenda, estilos_predefinidos["youtube"])
+        
+        if audio_duration > video_duration:
+            diff = audio_duration - video_duration
+            fade_duration = min(1.0, diff)
+            fade_start = video_duration - fade_duration
+            if legendas_srt:
+                srt_escaped = legendas_srt.replace('\\', '/').replace(':', '\\:')
+                filter_complex = f"[0:v]fade=t=out:st={fade_start}:d={fade_duration},tpad=stop_mode=add:stop_duration={diff}:color=black,subtitles={srt_escaped}:force_style='{style}'[v]"
+            else:
+                filter_complex = f'[0:v]fade=t=out:st={fade_start}:d={fade_duration},tpad=stop_mode=add:stop_duration={diff}:color=black[v]'
+            cmd = ['ffmpeg', '-y', '-i', temp_video_sem_audio, '-i', audio_narracao, '-filter_complex', filter_complex, '-map', '[v]', '-map', '1:a:0', '-c:v', 'libx264', '-preset', 'faster', '-c:a', 'aac', '-b:a', '192k', '-pix_fmt', 'yuv420p', output]
+        else:
+            if legendas_srt:
+                srt_escaped = legendas_srt.replace('\\', '/').replace(':', '\\:')
+                cmd = ['ffmpeg', '-y', '-i', temp_video_sem_audio, '-i', audio_narracao, '-vf', f"subtitles={srt_escaped}:force_style='{style}'", '-c:v', 'libx264', '-preset', 'faster', '-c:a', 'aac', '-b:a', '192k', '-pix_fmt', 'yuv420p', '-shortest', output]
+            else:
+                cmd = ['ffmpeg', '-y', '-i', temp_video_sem_audio, '-i', audio_narracao, '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-shortest', output]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise Exception(f"Erro ao adicionar áudio: {result.stderr}")
+        
+        print(f"✅ Vídeo processado!")
+    finally:
+        if os.path.exists(temp_video_sem_audio):
+            os.remove(temp_video_sem_audio)
 
+def gerar_legendas_srt(audio_path, output_srt):
+    print(f"🎙️ Transcrevendo áudio com Whisper...")
+    try:
+        with open(audio_path, "rb") as audio_file:
+            transcript = client.audio.transcriptions.create(model="whisper-1", file=audio_file, response_format="srt", language="pt")
+        with open(output_srt, "w", encoding="utf-8") as f:
+            f.write(transcript)
+        print(f"✅ Legendas geradas: {output_srt}")
+        return output_srt
+    except Exception as e:
+        raise Exception(f"Erro ao transcrever áudio: {str(e)}")
+
+def cleanup_job(job_dir, delay_seconds=3600):
+    time.sleep(delay_seconds)
+    if job_dir.exists():
+        shutil.rmtree(job_dir, ignore_errors=True)
+
+def baixar_arquivo(url, destino):
+    response = requests.get(url, stream=True, timeout=60)
+    response.raise_for_status()
+    with open(destino, 'wb') as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            f.write(chunk)
+
+# --------------------------------------------------------
+# FastAPI App
+# --------------------------------------------------------
 app = FastAPI()
 
-# --------------------------------------------------------
 @app.get("/ping")
 def ping():
     return {"ok": True, "service": "runner"}
 
 # --------------------------------------------------------
+# ENDPOINT: Extrai artigo com BeautifulSoup (SEM IA!)
+# --------------------------------------------------------
+@app.post("/extract-article")
+async def extract_article(payload: ExtractArticlePayload):
+    """
+    Extrai conteúdo estruturado de um artigo da Alura usando BeautifulSoup.
+    
+    ✅ 100% determinístico
+    ✅ Custo ZERO (sem IA)
+    ✅ ~1-2 segundos por artigo
+    
+    Retorna JSON compatível com /generate-docx
+    """
+    try:
+        print(f"📥 Extraindo artigo: {payload.url}")
+        
+        # Fetch do HTML
+        with httpx.Client(timeout=30, follow_redirects=True) as client:
+            response = client.get(payload.url)
+            response.raise_for_status()
+            html = response.text
+        
+        print(f"📄 HTML recebido: {len(html)} bytes")
+        
+        # Extrai conteúdo
+        result = extract_article_content(html, payload.url)
+        
+        print(f"✅ Extração concluída!")
+        print(f"📊 Estatísticas: {result['stats']}")
+        print(f"📝 Título: {result['metadata'].get('title', 'N/A')}")
+        print(f"👤 Autor: {result['metadata'].get('author', 'N/A')}")
+        print(f"📅 Data: {result['metadata'].get('publishDate', 'N/A')}")
+        
+        return result
+    
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=400, detail=f"Erro ao buscar URL: {str(e)}")
+    except Exception as e:
+        print(f"❌ Erro na extração: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Erro ao extrair artigo: {str(e)}")
+
+# --------------------------------------------------------
+# ENDPOINT: Pipeline completo HTML → DOCX
+# --------------------------------------------------------
+@app.post("/html-to-docx")
+async def html_to_docx(payload: ExtractArticlePayload):
+    """
+    Pipeline completo: extrai artigo e gera DOCX em uma única chamada.
+    
+    ✅ Sem IA
+    ✅ Custo ZERO
+    ✅ Retorna arquivo .docx pronto
+    """
+    try:
+        print(f"🚀 Pipeline HTML → DOCX: {payload.url}")
+        
+        # 1. Fetch HTML
+        with httpx.Client(timeout=30, follow_redirects=True) as client:
+            response = client.get(payload.url)
+            response.raise_for_status()
+            html = response.text
+        
+        # 2. Extrai conteúdo
+        article_data = extract_article_content(html, payload.url)
+        
+        print(f"📊 Extraído: {article_data['stats']}")
+        
+        # 3. Gera DOCX
+        docx_payload = GenerateDocxPayload(
+            metadata=ArticleMetadata(**article_data['metadata']),
+            content=[ContentItem(**item) for item in article_data['content']],
+            filename=article_data['filename'],
+            base_url=article_data['base_url']
+        )
+        
+        return await generate_docx(docx_payload)
+    
+    except Exception as e:
+        print(f"❌ Erro no pipeline: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Erro no pipeline: {str(e)}")
+
+# --------------------------------------------------------
+# ENDPOINT: Gera DOCX a partir de JSON estruturado
+# --------------------------------------------------------
 @app.post("/generate-docx")
 async def generate_docx(payload: GenerateDocxPayload):
     """
     Gera um documento Word (.docx) a partir de JSON estruturado.
-    
-    Suporta:
-    - Títulos e metadados (autor, data)
-    - Headings (h2, h3, h4)
-    - Parágrafos com hyperlinks e formatação
-    - Listas (ordenadas e não-ordenadas, incluindo aninhadas)
-    - Blocos de código
-    - Imagens (baixadas automaticamente)
-    - Tabelas
-    - Citações (blockquote)
     """
     try:
         print(f"📝 Gerando DOCX: {payload.metadata.title or 'Sem título'}")
@@ -650,16 +1283,13 @@ async def generate_docx(payload: GenerateDocxPayload):
                 
                 para.space_after = Pt(6)
             
-            # LIST (com suporte a aninhamento)
+            # LIST
             elif item.type == "list" and item.items:
-                process_nested_list(doc, item.items, item.ordered or False, indent_level=0)
+                process_nested_list_docx(doc, item.items, item.ordered or False, indent_level=0)
                 doc.add_paragraph()
             
             # BLOCKQUOTE
             elif item.type == "blockquote":
-                print(f"💬 Adicionando citação...")
-                
-                # Texto da citação
                 if item.segments:
                     quote_para = doc.add_paragraph()
                     quote_para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
@@ -673,8 +1303,6 @@ async def generate_docx(payload: GenerateDocxPayload):
                             run.font.size = Pt(12)
                             run.italic = True
                             run.font.color.rgb = RGBColor(85, 85, 85)
-                            if seg.bold:
-                                run.bold = True
                     
                     add_left_border(quote_para, color='0066CC', width=24)
                     quote_para.paragraph_format.left_indent = Inches(0.3)
@@ -696,7 +1324,6 @@ async def generate_docx(payload: GenerateDocxPayload):
                     quote_para.space_before = Pt(6)
                     quote_para.space_after = Pt(6)
                 
-                # Fonte da citação (se houver)
                 if item.cite:
                     cite_para = doc.add_paragraph()
                     cite_run = cite_para.add_run(f"— {item.cite}")
@@ -706,8 +1333,6 @@ async def generate_docx(payload: GenerateDocxPayload):
                     cite_run.font.color.rgb = RGBColor(120, 120, 120)
                     cite_para.paragraph_format.left_indent = Inches(0.5)
                     cite_para.space_after = Pt(12)
-                else:
-                    doc.add_paragraph().space_after = Pt(6)
             
             # CODE
             elif item.type == "code" and item.content:
@@ -775,8 +1400,20 @@ async def generate_docx(payload: GenerateDocxPayload):
                         print(f"✅ Imagem adicionada")
                     except Exception as img_error:
                         print(f"❌ Erro ao processar imagem: {img_error}")
-                else:
-                    print(f"⚠️ Não foi possível baixar a imagem")
+            
+            # YOUTUBE
+            elif item.type == "youtube" and item.url:
+                yt_para = doc.add_paragraph()
+                yt_para.add_run("🎬 Vídeo: ")
+                add_hyperlink(yt_para, item.text or item.url, item.url)
+                yt_para.space_after = Pt(6)
+            
+            # PODCAST
+            elif item.type == "podcast" and item.url:
+                pod_para = doc.add_paragraph()
+                pod_para.add_run("🎧 Podcast: ")
+                add_hyperlink(pod_para, item.text or item.url, item.url)
+                pod_para.space_after = Pt(6)
             
             # TABLE
             elif item.type == "table" and item.headers and item.rows:
@@ -813,7 +1450,6 @@ async def generate_docx(payload: GenerateDocxPayload):
                                     run.font.size = Pt(10)
                 
                 doc.add_paragraph().space_after = Pt(12)
-                print(f"✅ Tabela adicionada")
         
         # Salvar documento
         doc_buffer = BytesIO()
@@ -830,44 +1466,34 @@ async def generate_docx(payload: GenerateDocxPayload):
         return Response(
             content=doc_buffer.getvalue(),
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"'
-            }
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
         )
     
     except Exception as e:
         print(f"❌ Erro ao gerar DOCX: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Erro ao gerar DOCX: {str(e)}")
 
 # --------------------------------------------------------
-# Demais endpoints (vídeo, LinkedIn, Alura) permanecem iguais
+# Outros endpoints (vídeo, LinkedIn, Alura)
 # --------------------------------------------------------
 
 @app.post("/processar_video_urls")
-async def processar_video_urls(
-    payload: VideoURLProcessingPayload,
-    background_tasks: BackgroundTasks
-):
+async def processar_video_urls(payload: VideoURLProcessingPayload, background_tasks: BackgroundTasks):
     job_id = str(uuid.uuid4())
     job_dir = TEMP_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
     
     try:
-        print(f"🎬 Iniciando processamento: {job_id}")
-        print(f"📥 Baixando {len(payload.video_urls)} vídeos...")
-        
         video_paths = []
         for i, url in enumerate(payload.video_urls):
             video_path = job_dir / f"video_{i:03d}.mp4"
             baixar_arquivo(url, str(video_path))
             video_paths.append(str(video_path))
         
-        print(f"✅ {len(video_paths)} vídeos baixados")
-        
-        print(f"📥 Baixando áudio da narração...")
         audio_path = job_dir / "audio_narracao.mp3"
         baixar_arquivo(payload.audio_url, str(audio_path))
-        print(f"✅ Áudio baixado")
         
         srt_path = None
         if payload.adicionar_legendas:
@@ -876,59 +1502,25 @@ async def processar_video_urls(
         
         output_path = job_dir / "video_final.mp4"
         
-        print(f"🔄 Processando vídeo com transições {payload.transicao_tipo}...")
-        criar_video_com_transicoes(
-            video_paths,
-            str(audio_path),
-            str(output_path),
-            transicao_duracao=payload.transicao_duracao,
-            transicao_tipo=payload.transicao_tipo,
-            legendas_srt=srt_path,
-            estilo_legenda=payload.estilo_legenda,
-            legenda_config=payload.legenda_config
-        )
-        
-        print(f"✅ Processamento concluído: {output_path}")
+        criar_video_com_transicoes(video_paths, str(audio_path), str(output_path), transicao_duracao=payload.transicao_duracao, transicao_tipo=payload.transicao_tipo, legendas_srt=srt_path, estilo_legenda=payload.estilo_legenda, legenda_config=payload.legenda_config)
         
         background_tasks.add_task(cleanup_job, job_dir, 3600)
         
         filename = payload.output_filename if payload.output_filename.endswith('.mp4') else f"{payload.output_filename}.mp4"
-        return FileResponse(
-            path=str(output_path),
-            media_type="video/mp4",
-            filename=filename,
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"'
-            }
-        )
-    
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Erro ao baixar arquivos: {str(e)}")
-        if job_dir.exists():
-            shutil.rmtree(job_dir, ignore_errors=True)
-        raise HTTPException(status_code=500, detail=f"Erro ao baixar arquivos: {str(e)}")
+        return FileResponse(path=str(output_path), media_type="video/mp4", filename=filename, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
     
     except Exception as e:
-        print(f"❌ Erro no processamento: {str(e)}")
         if job_dir.exists():
             shutil.rmtree(job_dir, ignore_errors=True)
         raise HTTPException(status_code=500, detail=f"Erro ao processar vídeo: {str(e)}")
 
 @app.post("/processar_video")
-async def processar_video(
-    background_tasks: BackgroundTasks,
-    videos: List[UploadFile] = File(..., description="Lista de vídeos (5s cada)"),
-    audio: UploadFile = File(..., description="Áudio da narração"),
-    transicao_duracao: float = 0.5,
-    transicao_tipo: str = "fade"
-):
+async def processar_video(background_tasks: BackgroundTasks, videos: List[UploadFile] = File(...), audio: UploadFile = File(...), transicao_duracao: float = 0.5, transicao_tipo: str = "fade"):
     job_id = str(uuid.uuid4())
     job_dir = TEMP_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
     
     try:
-        print(f"🎬 Iniciando processamento: {job_id}")
-        
         video_paths = []
         for i, video in enumerate(videos):
             video_path = job_dir / f"video_{i:03d}.mp4"
@@ -936,77 +1528,42 @@ async def processar_video(
                 shutil.copyfileobj(video.file, f)
             video_paths.append(str(video_path))
         
-        print(f"✅ {len(video_paths)} vídeos salvos")
-        
         audio_path = job_dir / "audio_narracao.mp3"
         with open(audio_path, "wb") as f:
             shutil.copyfileobj(audio.file, f)
         
-        print(f"✅ Áudio de narração salvo")
-        
         output_path = job_dir / "video_final.mp4"
         
-        print(f"🔄 Processando vídeo com transições {transicao_tipo}...")
-        criar_video_com_transicoes(
-            video_paths,
-            str(audio_path),
-            str(output_path),
-            transicao_duracao=transicao_duracao,
-            transicao_tipo=transicao_tipo
-        )
-        
-        print(f"✅ Processamento concluído: {output_path}")
+        criar_video_com_transicoes(video_paths, str(audio_path), str(output_path), transicao_duracao=transicao_duracao, transicao_tipo=transicao_tipo)
         
         background_tasks.add_task(cleanup_job, job_dir, 3600)
         
-        return FileResponse(
-            path=str(output_path),
-            media_type="video/mp4",
-            filename=f"video_final_{job_id[:8]}.mp4",
-            headers={
-                "Content-Disposition": f'attachment; filename="video_final_{job_id[:8]}.mp4"'
-            }
-        )
+        return FileResponse(path=str(output_path), media_type="video/mp4", filename=f"video_final_{job_id[:8]}.mp4")
     
     except Exception as e:
-        print(f"❌ Erro no processamento: {str(e)}")
         if job_dir.exists():
             shutil.rmtree(job_dir, ignore_errors=True)
         raise HTTPException(status_code=500, detail=f"Erro ao processar vídeo: {str(e)}")
 
 @app.get("/processar_video/status")
 def status_processamento():
-    return {
-        "ok": True,
-        "ffmpeg_disponivel": shutil.which("ffmpeg") is not None,
-        "temp_dir": str(TEMP_DIR),
-        "transicoes_disponiveis": [
-            "fade", "wipeleft", "wiperight", "wipeup", "wipedown",
-            "slideleft", "slideright", "slideup", "slidedown",
-            "dissolve", "pixelize"
-        ]
-    }
+    return {"ok": True, "ffmpeg_disponivel": shutil.which("ffmpeg") is not None, "temp_dir": str(TEMP_DIR), "transicoes_disponiveis": ["fade", "wipeleft", "wiperight", "wipeup", "wipedown", "slideleft", "slideright", "slideup", "slidedown", "dissolve", "pixelize"]}
 
 @app.post("/pesquisa_mercado_linkedin")
 def pesquisa_mercado_linkedin(p: PesquisaPayload):
     params = {"keywords": p.query, "location": "Brasil", "start": 0}
     user = os.environ.get("LINKEDIN_USER")
     passwd = os.environ.get("LINKEDIN_PASS")
-
     if not user or not passwd:
-        raise HTTPException(status_code=500, detail="Defina LINKEDIN_USER e LINKEDIN_PASS no ambiente do runner.")
-
+        raise HTTPException(status_code=500, detail="Defina LINKEDIN_USER e LINKEDIN_PASS")
+    
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage",
-                      "--disable-gpu", "--disable-software-rasterizer", "--disable-blink-features=AutomationControlled"]
-            )
+            browser = pw.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
             page = browser.new_page()
             login_linkedin(page, user, passwd)
             links = []
-            for i in tqdm(range(0, int(p.n_vagas), 25)):
+            for i in range(0, int(p.n_vagas), 25):
                 params["start"] = i
                 page.goto(f"https://www.linkedin.com/jobs/search/?{urlencode(params)}")
                 lista = page.locator("div.scaffold-layout__list")
@@ -1016,23 +1573,11 @@ def pesquisa_mercado_linkedin(p: PesquisaPayload):
                 page.wait_for_selector('a[href^="/jobs/view/"]', timeout=60000)
                 vagas = rolar_e_coletar_vagas(page, container, max_rolagens=10, pausa=1.2)
                 links = list(dict.fromkeys(links + vagas))
-            print(f"{len(links)} vagas coletadas")
             page.goto("https://www.linkedin.com/m/logout/")
-            page.wait_for_timeout(2000)
             browser.close()
-
-        payload = {"ok": True, "mensagem": "Busca finalizada com sucesso!", "data": links}
-        body = json.dumps(payload, ensure_ascii=False)
-        return Response(content=body, media_type="application/json", headers={"Connection": "close"})
-    
-    except PlaywrightTimeout as e:
-        with open("/tmp/lnkd-debug.html", "w", encoding="utf-8") as f:
-            f.write(page.content())
-        raise HTTPException(status_code=500, detail=f"Timeout Playwright: {e}")
+        return Response(content=json.dumps({"ok": True, "data": links}, ensure_ascii=False), media_type="application/json")
     except Exception as e:
-        with open("/tmp/lnkd-debug.html", "w", encoding="utf-8") as f:
-            f.write(page.content())
-        raise HTTPException(status_code=500, detail=f"Falha Playwright: {e}")
+        raise HTTPException(status_code=500, detail=f"Falha: {e}")
 
 @app.post("/cadastrar_curso")
 def cadastrar(p: Payload):
@@ -1047,7 +1592,7 @@ def cadastrar(p: Payload):
     user = os.environ.get("ALURA_USER")
     passwd = os.environ.get("ALURA_PASS")
     if not user or not passwd:
-        raise HTTPException(status_code=500, detail="Defina ALURA_USER e ALURA_PASS no ambiente do runner.")
+        raise HTTPException(status_code=500, detail="Defina ALURA_USER e ALURA_PASS")
     code = gerar_codigo_cursos(p.nome_curso)
     try:
         with sync_playwright() as pw:
@@ -1057,26 +1602,20 @@ def cadastrar(p: Payload):
             page.goto("https://cursos.alura.com.br/admin/v2/newCourse")
             page.fill('input[name="name"]', p.nome_curso)
             page.fill('input[name="code"]', code)
-            page.fill('input[name="metaTitle"]', '')
             page.fill('input[name="estimatedTimeToFinish"]', str(int(p.tempo_curso)))
             page.fill('input[name="metadescription"]', 'Será atualizado pelo(a) instrutor(a).')
             page.select_option('select[name="authors"]', value=autor_valor)
-            print("Curso cadastrado com sucesso! Apenas um teste")
             browser.close()
-        payload = {"ok": True, "mensagem": "Curso cadastrado com sucesso!", "code": code}
-        body = json.dumps(payload, ensure_ascii=False)
-        return Response(content=body, media_type="application/json", headers={"Connection": "close"})
-    except PlaywrightTimeout as e:
-        raise HTTPException(status_code=500, detail=f"Timeout Playwright: {e}")
+        return Response(content=json.dumps({"ok": True, "code": code}, ensure_ascii=False), media_type="application/json")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Falha Playwright: {e}")
+        raise HTTPException(status_code=500, detail=f"Falha: {e}")
 
 @app.post("/get_transcription_course")
 def get_transcription_course(p: IDPayload):
     user = os.environ.get("ALURA_USER")
     passwd = os.environ.get("ALURA_PASS")
     if not user or not passwd:
-        raise HTTPException(status_code=500, detail="Defina ALURA_USER e ALURA_PASS no ambiente do runner.")
+        raise HTTPException(status_code=500, detail="Defina ALURA_USER e ALURA_PASS")
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True)
@@ -1085,46 +1624,30 @@ def get_transcription_course(p: IDPayload):
             page.goto(f"https://cursos.alura.com.br/admin/courses/v2/{p.id}")
             link = "https://cursos.alura.com.br" + page.locator('a:has-text("Ver curso")').get_attribute('href')
             page.goto(link, timeout=60000, wait_until="domcontentloaded")
-            try:
-                page.wait_for_selector(".courseSectionList", timeout=60000)
-                html = page.content()
-                soup = BeautifulSoup(html, "html.parser")
-            except TimeoutError:
-                print(f"[AVISO] Timeout em {link}. Pulando...")
+            page.wait_for_selector(".courseSectionList", timeout=60000)
+            html = page.content()
+            soup = BeautifulSoup(html, "html.parser")
             nome = soup.find("h1").strong.get_text()
             videos = []
             for item in soup.find_all("li", class_="courseSection-listItem"):
                 aula = f"https://cursos.alura.com.br{item.find('a', class_='courseSectionList-section')['href']}"
                 page.goto(aula, timeout=60000, wait_until="domcontentloaded")
-                try:
-                    page.wait_for_selector(".task-menu-sections-select", timeout=60000)
-                    html = page.content()
-                    soup_section = BeautifulSoup(html, "html.parser")
-                    for video in soup_section.find_all("a", class_="task-menu-nav-item-link task-menu-nav-item-link-VIDEO"):
-                        videos.append(f"https://cursos.alura.com.br{video['href']}")
-                except TimeoutError:
-                    print(f"[AVISO] Timeout em {aula}. Pulando...")
-                    continue
+                page.wait_for_selector(".task-menu-sections-select", timeout=60000)
+                html = page.content()
+                soup_section = BeautifulSoup(html, "html.parser")
+                for video in soup_section.find_all("a", class_="task-menu-nav-item-link task-menu-nav-item-link-VIDEO"):
+                    videos.append(f"https://cursos.alura.com.br{video['href']}")
             transcricoes = []
             for index, video in enumerate(videos):
                 page.goto(video, timeout=60000, wait_until="domcontentloaded")
-                try:
-                    page.wait_for_selector("#transcription", timeout=60000)
-                    html = page.content()
-                    soup_video = BeautifulSoup(html, "html.parser")
-                    title = soup_video.find("h1", class_="task-body-header-title").span.get_text()
-                    transcription = soup_video.find("section", id="transcription").get_text()
-                    transcription = transcription.replace("Transcrição", f"Vídeo {index + 1} -{title}")
-                    texto_limpo = limpar_texto(transcription)
-                    transcricoes.append(texto_limpo)
-                except TimeoutError:
-                    print(f"[AVISO] Timeout em {video}. Pulando...")
-                    transcricoes.append(None)
+                page.wait_for_selector("#transcription", timeout=60000)
+                html = page.content()
+                soup_video = BeautifulSoup(html, "html.parser")
+                title = soup_video.find("h1", class_="task-body-header-title").span.get_text()
+                transcription = soup_video.find("section", id="transcription").get_text()
+                transcription = transcription.replace("Transcrição", f"Vídeo {index + 1} -{title}")
+                transcricoes.append(limpar_texto(transcription))
             browser.close()
-        payload = {"id": p.id, "nome": nome, "link": link, "transcricao": transcricoes}
-        body = json.dumps(payload, ensure_ascii=False)
-        return Response(content=body, media_type="application/json", headers={"Connection": "close"})
-    except PlaywrightTimeout as e:
-        raise HTTPException(status_code=500, detail=f"Timeout Playwright: {e}")
+        return Response(content=json.dumps({"id": p.id, "nome": nome, "link": link, "transcricao": transcricoes}, ensure_ascii=False), media_type="application/json")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Falha Playwright: {e}")
+        raise HTTPException(status_code=500, detail=f"Falha: {e}")
