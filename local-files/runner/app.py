@@ -213,6 +213,7 @@ def is_site_chrome(element):
     """
     Verifica se um elemento faz parte do "chrome" do site (header, nav, footer, etc.)
     e não do conteúdo do artigo.
+    CORRIGIDO v6.2: Inclui seção de autor e botões de compartilhamento
     """
     # Elementos de navegação e estrutura do site
     if element.find_parent(['nav', 'footer', 'aside']):
@@ -223,6 +224,22 @@ def is_site_chrome(element):
     if parent_header:
         # Se o header contém links de navegação, é chrome do site
         if parent_header.find('a', href=lambda x: x and '/carreiras' in x):
+            return True
+    
+    # CORRIGIDO v6.2: Seção de autor no final do artigo
+    if element.find_parent(class_=lambda x: x and 'cosmos-author' in str(x)):
+        return True
+    
+    # CORRIGIDO v6.2: Botões de compartilhamento social
+    if element.find_parent(class_=lambda x: x and 'social-media' in str(x)):
+        return True
+    if element.find_parent(class_=lambda x: x and 'cosmos-container-social' in str(x)):
+        return True
+    
+    # CORRIGIDO v6.2: Texto "Compartilhe" isolado
+    if element.name == 'p':
+        text = element.get_text(strip=True).lower()
+        if text == 'compartilhe':
             return True
     
     return False
@@ -287,6 +304,7 @@ def extract_text_with_formatting(element, base_url):
     """
     Extrai texto de um elemento preservando formatação (links, bold, italic).
     Retorna lista de segments.
+    CORRIGIDO v6.2: Processa recursivamente <p> dentro de <li>, links dentro de <em>, etc.
     """
     segments = []
     
@@ -306,27 +324,69 @@ def extract_text_with_formatting(element, base_url):
                 segments.append({"text": text, "link": href if href else None})
         
         elif child.name in ['strong', 'b']:
-            text = child.get_text()
-            if text.strip():
-                # Verifica se tem link dentro
-                inner_a = child.find('a')
-                if inner_a:
-                    href = inner_a.get('href', '')
-                    if href and not href.startswith('http'):
-                        href = urljoin(base_url, href)
+            # CORRIGIDO: Processa conteúdo interno para capturar <em> e <a> dentro
+            inner_a = child.find('a')
+            inner_em = child.find(['em', 'i'])
+            
+            if inner_a:
+                # Tem link dentro do bold
+                href = inner_a.get('href', '')
+                if href and not href.startswith('http') and not href.startswith('#'):
+                    href = urljoin(base_url, href)
+                text = child.get_text()
+                if text.strip():
                     segments.append({"text": text, "link": href, "bold": True})
-                else:
+            elif inner_em:
+                # Tem itálico dentro do bold - processa recursivamente
+                for subchild in child.children:
+                    if isinstance(subchild, NavigableString):
+                        text = str(subchild)
+                        if text.strip():
+                            segments.append({"text": text, "bold": True})
+                    elif subchild.name in ['em', 'i']:
+                        # Bold + Italic
+                        em_a = subchild.find('a')
+                        if em_a:
+                            href = em_a.get('href', '')
+                            if href and not href.startswith('http') and not href.startswith('#'):
+                                href = urljoin(base_url, href)
+                            segments.append({"text": subchild.get_text(), "link": href, "bold": True, "italic": True})
+                        else:
+                            segments.append({"text": subchild.get_text(), "bold": True, "italic": True})
+                    elif subchild.name == 'a':
+                        href = subchild.get('href', '')
+                        if href and not href.startswith('http') and not href.startswith('#'):
+                            href = urljoin(base_url, href)
+                        segments.append({"text": subchild.get_text(), "link": href, "bold": True})
+            else:
+                text = child.get_text()
+                if text.strip():
                     segments.append({"text": text, "bold": True})
         
         elif child.name in ['em', 'i']:
-            text = child.get_text()
-            if text.strip():
-                segments.append({"text": text, "italic": True})
+            # CORRIGIDO: Verifica se tem link dentro do itálico
+            inner_a = child.find('a')
+            if inner_a:
+                href = inner_a.get('href', '')
+                if href and not href.startswith('http') and not href.startswith('#'):
+                    href = urljoin(base_url, href)
+                text = child.get_text()
+                if text.strip():
+                    segments.append({"text": text, "link": href, "italic": True})
+            else:
+                text = child.get_text()
+                if text.strip():
+                    segments.append({"text": text, "italic": True})
         
         elif child.name == 'code':
             text = child.get_text()
             if text.strip():
                 segments.append({"text": f"`{text}`", "bold": True})
+        
+        elif child.name == 'p':
+            # CORRIGIDO v6.2: Processa <p> recursivamente (comum em <li><p>...</p></li>)
+            inner_segments = extract_text_with_formatting(child, base_url)
+            segments.extend(inner_segments)
         
         elif child.name in ['span', 'mark', 'u']:
             # Processa recursivamente
@@ -591,18 +651,10 @@ def extract_article_content(html: str, base_url: str) -> dict:
         if is_decorative_element(element):
             continue
         
-        # Verifica se chegamos na seção "Leia também" ou seção de autor final
+        # Verifica se chegamos na seção "Leia também"
         if element.name in ['h2', 'h3']:
             text = element.get_text(strip=True).lower()
             if any(x in text for x in ['leia também', 'artigos relacionados', 'veja outros artigos']):
-                stop_processing = True
-        
-        # CORRIGIDO v6.1: Para quando encontrar seção de autor no final (imagem de gravatar após conteúdo)
-        if element.name == 'img' and len(content) > 5:
-            src = element.get('src', '')
-            if 'gravatar.com' in src or 'gnarususercontent.com.br' in src:
-                # Verifica se já passamos do conteúdo principal (muitos elementos já processados)
-                # e não é a primeira imagem de autor (que aparece no início)
                 stop_processing = True
         
         if stop_processing:
@@ -717,42 +769,59 @@ def extract_article_content(html: str, base_url: str) -> dict:
         elif element.name == 'blockquote':
             inner_text = element.get_text(strip=True)
             
-            # CORRIGIDO v6.1: Verifica se é embed APENAS se o texto for uma URL sozinha
-            # Se tiver texto adicional, preserva como blockquote com link
+            # CORRIGIDO v6.2: Verifica se tem LINK para YouTube/Podcast (com texto descritivo)
+            # Nesse caso, preserva como citação com hyperlink
+            inner_links = element.find_all('a')
+            has_descriptive_link = False
             
-            # Verifica se é APENAS uma URL de YouTube (sem texto adicional significativo)
+            for a_tag in inner_links:
+                href = a_tag.get('href', '')
+                link_text = a_tag.get_text(strip=True)
+                
+                # Se tem link com texto descritivo (não é só a URL), preserva como blockquote
+                if link_text and href and link_text != href:
+                    has_descriptive_link = True
+                    break
+            
+            # Se tem link descritivo, SEMPRE preserva como blockquote com segments
+            if has_descriptive_link:
+                segments = extract_text_with_formatting(element, base_url)
+                if segments:
+                    blockquote_item = {'type': 'blockquote', 'segments': segments}
+                    cite_tag = element.find('cite')
+                    if cite_tag:
+                        blockquote_item['cite'] = cite_tag.get_text(strip=True)
+                    content.append(blockquote_item)
+                continue
+            
+            # Se não tem link descritivo, verifica se é URL solta de YouTube/Podcast
             yt_url = detect_youtube_url(inner_text)
             if yt_url:
-                # Se o texto for basicamente só a URL, é um embed
-                url_only = len(inner_text.replace(yt_url, '').strip()) < 20
-                if url_only:
-                    content.append({
-                        'type': 'youtube',
-                        'url': yt_url,
-                        'text': ''
-                    })
-                    continue
+                # É só uma URL de YouTube solta no texto
+                content.append({
+                    'type': 'youtube',
+                    'url': yt_url,
+                    'text': ''
+                })
+                continue
             
-            # Verifica se é APENAS uma URL de Podcast
             podcast_url = detect_podcast_url(inner_text)
             if podcast_url:
-                url_only = len(inner_text.replace(podcast_url, '').strip()) < 20
-                if url_only:
-                    content.append({
-                        'type': 'podcast',
-                        'url': podcast_url,
-                        'text': ''
-                    })
-                    continue
+                # É só uma URL de Podcast solta no texto
+                content.append({
+                    'type': 'podcast',
+                    'url': podcast_url,
+                    'text': ''
+                })
+                continue
             
-            # Blockquote normal - SEMPRE preserva como segments para manter links
+            # Blockquote normal (citação sem link especial)
             segments = extract_text_with_formatting(element, base_url)
             
             cite_tag = element.find('cite')
             cite = cite_tag.get_text(strip=True) if cite_tag else None
             
             if segments:
-                # CORRIGIDO v6.1: Sempre usa segments para preservar links
                 blockquote_item = {'type': 'blockquote', 'segments': segments}
                 if cite:
                     blockquote_item['cite'] = cite
