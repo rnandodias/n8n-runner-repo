@@ -267,6 +267,22 @@ def is_related_articles_section(element):
     
     return False
 
+def get_text_preserving_spaces(element):
+    """
+    Extrai texto de um elemento preservando espaços entre elementos inline.
+    Resolve: "Significado da palavra<em>kanban</em>" → "Significado da palavra kanban"
+    """
+    texts = []
+    for child in element.descendants:
+        if isinstance(child, NavigableString):
+            texts.append(str(child))
+    
+    # Junta e normaliza espaços
+    result = ''.join(texts)
+    result = re.sub(r'\s+', ' ', result)
+    return result.strip()
+
+
 def extract_text_with_formatting(element, base_url):
     """
     Extrai texto de um elemento preservando formatação (links, bold, italic).
@@ -336,6 +352,7 @@ def extract_text_with_formatting(element, base_url):
 def process_list_items(ul_or_ol, base_url, ordered=False):
     """
     Processa itens de lista, incluindo listas aninhadas.
+    CORRIGIDO v6.1: Preserva hyperlinks corretamente em todos os casos.
     """
     items = []
     
@@ -346,48 +363,55 @@ def process_list_items(ul_or_ol, base_url, ordered=False):
         sublist = li.find(['ul', 'ol'], recursive=False)
         
         if sublist:
-            # Faz cópia do li e remove sublista para pegar só o texto
-            li_text_parts = []
-            for child in li.children:
-                if child.name not in ['ul', 'ol']:
-                    if isinstance(child, NavigableString):
-                        li_text_parts.append(str(child))
-                    else:
-                        li_text_parts.append(child.get_text())
+            # Remove temporariamente a sublista para processar o texto do li
+            sublist_copy = sublist.extract()
             
-            text_content = ''.join(li_text_parts).strip()
+            # Agora processa o conteúdo do li SEM a sublista
+            segments = extract_text_with_formatting(li, base_url)
             
-            if text_content:
-                # Verifica se tem links
-                links_in_li = []
-                for a in li.find_all('a', recursive=False):
-                    links_in_li.append({
-                        "text": a.get_text(),
-                        "link": urljoin(base_url, a.get('href', ''))
-                    })
+            # Restaura a sublista
+            li.append(sublist_copy)
+            
+            if segments:
+                # Verifica se tem formatação
+                has_formatting = any(
+                    seg.get('link') or seg.get('bold') or seg.get('italic')
+                    for seg in segments
+                )
                 
-                if links_in_li:
-                    item['segments'] = extract_text_with_formatting(li, base_url)
+                if has_formatting:
+                    item['segments'] = segments
+                elif len(segments) == 1:
+                    item['text'] = segments[0].get('text', '').strip()
                 else:
-                    item['text'] = text_content
+                    # Junta múltiplos segments de texto simples
+                    item['text'] = ''.join(seg.get('text', '') for seg in segments).strip()
             
             # Processa sublista
-            sub_ordered = sublist.name == 'ol'
-            sub_items = process_list_items(sublist, base_url, sub_ordered)
+            sub_ordered = sublist_copy.name == 'ol'
+            sub_items = process_list_items(sublist_copy, base_url, sub_ordered)
             if sub_items:
                 item['sublist'] = {
                     'ordered': sub_ordered,
                     'items': sub_items
                 }
         else:
-            # Sem sublista - processa normalmente
+            # Sem sublista - processa normalmente com extração completa
             segments = extract_text_with_formatting(li, base_url)
             if segments:
-                # Simplifica se for texto simples sem formatação
-                if len(segments) == 1 and 'link' not in segments[0] and 'bold' not in segments[0] and 'italic' not in segments[0]:
+                # Verifica se tem formatação
+                has_formatting = any(
+                    seg.get('link') or seg.get('bold') or seg.get('italic')
+                    for seg in segments
+                )
+                
+                if has_formatting:
+                    item['segments'] = segments
+                elif len(segments) == 1:
                     item['text'] = segments[0].get('text', '').strip()
                 else:
-                    item['segments'] = segments
+                    # Junta múltiplos segments de texto simples
+                    item['text'] = ''.join(seg.get('text', '') for seg in segments).strip()
         
         if item:
             items.append(item)
@@ -537,6 +561,13 @@ def extract_article_content(html: str, base_url: str) -> dict:
     # Flag para ignorar conteúdo após "Leia também"
     stop_processing = False
     
+    # CORRIGIDO v6.1: Coleta todos os textos de itens de lista para evitar duplicação
+    list_item_texts = set()
+    for li in main_content.find_all('li'):
+        li_text = li.get_text(strip=True)
+        if li_text and len(li_text) > 10:  # Só textos significativos
+            list_item_texts.add(li_text)
+    
     # ===== EXTRAI CONTEÚDO =====
     
     # Processa elementos na ordem em que aparecem
@@ -560,10 +591,18 @@ def extract_article_content(html: str, base_url: str) -> dict:
         if is_decorative_element(element):
             continue
         
-        # Verifica se chegamos na seção "Leia também"
+        # Verifica se chegamos na seção "Leia também" ou seção de autor final
         if element.name in ['h2', 'h3']:
             text = element.get_text(strip=True).lower()
             if any(x in text for x in ['leia também', 'artigos relacionados', 'veja outros artigos']):
+                stop_processing = True
+        
+        # CORRIGIDO v6.1: Para quando encontrar seção de autor no final (imagem de gravatar após conteúdo)
+        if element.name == 'img' and len(content) > 5:
+            src = element.get('src', '')
+            if 'gravatar.com' in src or 'gnarususercontent.com.br' in src:
+                # Verifica se já passamos do conteúdo principal (muitos elementos já processados)
+                # e não é a primeira imagem de autor (que aparece no início)
                 stop_processing = True
         
         if stop_processing:
@@ -575,7 +614,8 @@ def extract_article_content(html: str, base_url: str) -> dict:
         
         # ===== HEADINGS (h2, h3, h4, h5) =====
         if element.name in ['h2', 'h3', 'h4', 'h5']:
-            text = element.get_text(strip=True)
+            # CORRIGIDO v6.1: Usa função que preserva espaços entre elementos inline
+            text = get_text_preserving_spaces(element)
             if text and len(text) > 1:
                 # Ignora headings que são do sumário/TOC
                 if element.find_parent(class_=lambda x: x and 'toc' in x.lower() if x else False):
@@ -592,6 +632,10 @@ def extract_article_content(html: str, base_url: str) -> dict:
         elif element.name == 'p':
             text = element.get_text(strip=True)
             if not text:
+                continue
+            
+            # CORRIGIDO v6.1: Pula se este texto já foi processado como item de lista
+            if text in list_item_texts:
                 continue
             
             # Verifica se contém embed de YouTube
@@ -671,56 +715,47 @@ def extract_article_content(html: str, base_url: str) -> dict:
         
         # ===== BLOCKQUOTES =====
         elif element.name == 'blockquote':
-            # Verifica se é embed de podcast/youtube disfarçado
             inner_text = element.get_text(strip=True)
             
+            # CORRIGIDO v6.1: Verifica se é embed APENAS se o texto for uma URL sozinha
+            # Se tiver texto adicional, preserva como blockquote com link
+            
+            # Verifica se é APENAS uma URL de YouTube (sem texto adicional significativo)
             yt_url = detect_youtube_url(inner_text)
             if yt_url:
-                # Extrai título se houver
-                title = ''
-                first_line = inner_text.split('\n')[0] if '\n' in inner_text else inner_text
-                if len(first_line) < 200:
-                    title = first_line
-                
-                content.append({
-                    'type': 'youtube',
-                    'url': yt_url,
-                    'text': title
-                })
-                continue
+                # Se o texto for basicamente só a URL, é um embed
+                url_only = len(inner_text.replace(yt_url, '').strip()) < 20
+                if url_only:
+                    content.append({
+                        'type': 'youtube',
+                        'url': yt_url,
+                        'text': ''
+                    })
+                    continue
             
+            # Verifica se é APENAS uma URL de Podcast
             podcast_url = detect_podcast_url(inner_text)
             if podcast_url:
-                content.append({
-                    'type': 'podcast',
-                    'url': podcast_url,
-                    'text': inner_text[:200] if len(inner_text) > 200 else inner_text
-                })
-                continue
+                url_only = len(inner_text.replace(podcast_url, '').strip()) < 20
+                if url_only:
+                    content.append({
+                        'type': 'podcast',
+                        'url': podcast_url,
+                        'text': ''
+                    })
+                    continue
             
-            # Blockquote normal (citação)
+            # Blockquote normal - SEMPRE preserva como segments para manter links
             segments = extract_text_with_formatting(element, base_url)
             
-            # Verifica se tem cite
             cite_tag = element.find('cite')
             cite = cite_tag.get_text(strip=True) if cite_tag else None
             
             if segments:
-                blockquote_item = {'type': 'blockquote'}
-                
-                has_formatting = any(
-                    seg.get('link') or seg.get('bold') or seg.get('italic')
-                    for seg in segments
-                )
-                
-                if not has_formatting and len(segments) == 1:
-                    blockquote_item['text'] = segments[0].get('text', '').strip()
-                else:
-                    blockquote_item['segments'] = segments
-                
+                # CORRIGIDO v6.1: Sempre usa segments para preservar links
+                blockquote_item = {'type': 'blockquote', 'segments': segments}
                 if cite:
                     blockquote_item['cite'] = cite
-                
                 content.append(blockquote_item)
         
         # ===== CÓDIGO =====

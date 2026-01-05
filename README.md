@@ -8,7 +8,7 @@ git push
 
 OU
 
-git add -A && git commit -m "v5: blockquote, sublists, melhorias" && git push
+git add -A && git commit -m "Correções no processo de geração do DOCX" && git push
 
 ---
 
