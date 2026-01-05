@@ -247,27 +247,45 @@ def is_site_chrome(element):
 def is_decorative_element(element):
     """
     Verifica se é um elemento decorativo (ícones, logos, setas, etc.)
+    CORRIGIDO v6.3: Não filtra imagens do CDN de conteúdo
     """
     if element.name == 'img':
         src = element.get('src', '').lower()
         alt = element.get('alt', '').lower()
+        classes = element.get('class', [])
         
+        # CORRIGIDO v6.3: Imagens com classe cosmos-image são SEMPRE conteúdo
+        if 'cosmos-image' in classes:
+            return False
+        
+        # CORRIGIDO v6.3: Imagens do CDN de conteúdo são SEMPRE conteúdo
+        if 'cdn-wcsm.alura.com.br' in src:
+            return False
+        
+        # Padrões de elementos decorativos do SITE (não de conteúdo)
         decorative_patterns = [
             '/assets/img/header/', '/assets/img/home/', '/assets/img/caelum',
-            'arrow-', 'return-', 'logo', 'icon', 'avatar', '.svg',
-            'gravatar.com/avatar'
+            '/assets/img/footer/', '/assets/img/ecossistema/',
+            'arrow-', 'return-', 'icon', 'avatar', 
+            'gravatar.com/avatar', 'gnarususercontent.com.br'
         ]
         
         for pattern in decorative_patterns:
             if pattern in src:
-                # Exceção: imagens do CDN de conteúdo (infográficos)
-                if 'cdn-wcsm.alura.com.br' in src and 'assets/' in src:
-                    return False  # É conteúdo do artigo
                 return True
         
-        # Imagens muito pequenas (provavelmente ícones)
-        if element.get('width') and int(element.get('width', 100)) < 50:
+        # SVGs do site (não de conteúdo) são geralmente ícones
+        if '.svg' in src and '/assets/' in src:
             return True
+        
+        # Imagens muito pequenas (provavelmente ícones)
+        width = element.get('width')
+        if width:
+            try:
+                if int(width) < 50:
+                    return True
+            except ValueError:
+                pass
     
     return False
 
@@ -690,46 +708,10 @@ def extract_article_content(html: str, base_url: str) -> dict:
             if text in list_item_texts:
                 continue
             
-            # Verifica se contém embed de YouTube
-            yt_url = None
-            for a in element.find_all('a'):
-                href = a.get('href', '')
-                yt_url = detect_youtube_url(href)
-                if yt_url:
-                    break
+            # CORRIGIDO v6.3: Removido tratamento especial de YouTube/Podcast
+            # Todos os links são tratados normalmente como hyperlinks
             
-            # Verifica texto solto com URL do YouTube
-            if not yt_url:
-                yt_url = detect_youtube_url(text)
-            
-            if yt_url:
-                content.append({
-                    'type': 'youtube',
-                    'url': yt_url,
-                    'text': text if len(text) < 200 else ''
-                })
-                continue
-            
-            # Verifica se contém embed de Podcast
-            podcast_url = None
-            for a in element.find_all('a'):
-                href = a.get('href', '')
-                podcast_url = detect_podcast_url(href)
-                if podcast_url:
-                    break
-            
-            if not podcast_url:
-                podcast_url = detect_podcast_url(text)
-            
-            if podcast_url:
-                content.append({
-                    'type': 'podcast',
-                    'url': podcast_url,
-                    'text': text if len(text) < 200 else ''
-                })
-                continue
-            
-            # Parágrafo normal
+            # Parágrafo normal - preserva toda formatação incluindo links
             segments = extract_text_with_formatting(element, base_url)
             if segments:
                 # Simplifica se for texto simples
@@ -767,55 +749,9 @@ def extract_article_content(html: str, base_url: str) -> dict:
         
         # ===== BLOCKQUOTES =====
         elif element.name == 'blockquote':
-            inner_text = element.get_text(strip=True)
+            # CORRIGIDO v6.3: Removido tratamento especial de YouTube/Podcast
+            # Blockquotes são sempre citações com formatação preservada
             
-            # CORRIGIDO v6.2: Verifica se tem LINK para YouTube/Podcast (com texto descritivo)
-            # Nesse caso, preserva como citação com hyperlink
-            inner_links = element.find_all('a')
-            has_descriptive_link = False
-            
-            for a_tag in inner_links:
-                href = a_tag.get('href', '')
-                link_text = a_tag.get_text(strip=True)
-                
-                # Se tem link com texto descritivo (não é só a URL), preserva como blockquote
-                if link_text and href and link_text != href:
-                    has_descriptive_link = True
-                    break
-            
-            # Se tem link descritivo, SEMPRE preserva como blockquote com segments
-            if has_descriptive_link:
-                segments = extract_text_with_formatting(element, base_url)
-                if segments:
-                    blockquote_item = {'type': 'blockquote', 'segments': segments}
-                    cite_tag = element.find('cite')
-                    if cite_tag:
-                        blockquote_item['cite'] = cite_tag.get_text(strip=True)
-                    content.append(blockquote_item)
-                continue
-            
-            # Se não tem link descritivo, verifica se é URL solta de YouTube/Podcast
-            yt_url = detect_youtube_url(inner_text)
-            if yt_url:
-                # É só uma URL de YouTube solta no texto
-                content.append({
-                    'type': 'youtube',
-                    'url': yt_url,
-                    'text': ''
-                })
-                continue
-            
-            podcast_url = detect_podcast_url(inner_text)
-            if podcast_url:
-                # É só uma URL de Podcast solta no texto
-                content.append({
-                    'type': 'podcast',
-                    'url': podcast_url,
-                    'text': ''
-                })
-                continue
-            
-            # Blockquote normal (citação sem link especial)
             segments = extract_text_with_formatting(element, base_url)
             
             cite_tag = element.find('cite')
@@ -1345,6 +1281,11 @@ async def generate_docx(payload: GenerateDocxPayload):
             
             # HEADING
             if item.type == "heading" and item.text:
+                # CORRIGIDO v6.3: Adiciona linha extra antes de títulos para melhor separação visual
+                spacer = doc.add_paragraph()
+                spacer.space_after = Pt(0)
+                spacer.space_before = Pt(6)
+                
                 heading_para = doc.add_paragraph()
                 heading_run = heading_para.add_run(item.text)
                 heading_run.bold = True
@@ -1505,19 +1446,8 @@ async def generate_docx(payload: GenerateDocxPayload):
                     except Exception as img_error:
                         print(f"❌ Erro ao processar imagem: {img_error}")
             
-            # YOUTUBE
-            elif item.type == "youtube" and item.url:
-                yt_para = doc.add_paragraph()
-                yt_para.add_run("🎬 Vídeo: ")
-                add_hyperlink(yt_para, item.text or item.url, item.url)
-                yt_para.space_after = Pt(6)
-            
-            # PODCAST
-            elif item.type == "podcast" and item.url:
-                pod_para = doc.add_paragraph()
-                pod_para.add_run("🎧 Podcast: ")
-                add_hyperlink(pod_para, item.text or item.url, item.url)
-                pod_para.space_after = Pt(6)
+            # CORRIGIDO v6.3: Removido tratamento especial de YOUTUBE e PODCAST
+            # Links de vídeos e podcasts são tratados como links normais nos parágrafos
             
             # TABLE
             elif item.type == "table" and item.headers and item.rows:
