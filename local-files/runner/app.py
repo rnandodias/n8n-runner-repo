@@ -1667,8 +1667,24 @@ def get_transcription_course(p: IDPayload):
             browser = pw.chromium.launch(headless=True)
             page = browser.new_page()
             login_alura(page, user, passwd)
-            page.goto(f"https://cursos.alura.com.br/admin/courses/v2/{p.id}")
-            link = "https://cursos.alura.com.br" + page.locator('a:has-text("Ver curso")').get_attribute('href')
+            
+            page.goto(f"https://cursos.alura.com.br/admin/courses/v2/{p.id}", timeout=60000, wait_until="networkidle")
+            page.wait_for_selector('div.form-group', timeout=60000)
+            link_href = page.evaluate('''() => {
+                const links = document.querySelectorAll('a.btn-default');
+                for (let link of links) {
+                    if (link.href.includes('/course/') && link.textContent.includes('Ver curso')) {
+                        return link.getAttribute('href');
+                    }
+                }
+                return null;
+            }''')
+
+            if not link_href:
+                raise Exception("Porra, não achou o link 'Ver curso'")
+            link = "https://cursos.alura.com.br" + link_href
+            # link = "https://cursos.alura.com.br" + page.locator('a:has-text("Ver curso")').get_attribute('href')
+
             page.goto(link, timeout=60000, wait_until="domcontentloaded")
             page.wait_for_selector(".courseSectionList", timeout=60000)
             html = page.content()
