@@ -1286,20 +1286,28 @@ async def generate_docx(payload: GenerateDocxPayload):
                 spacer.space_after = Pt(0)
                 spacer.space_before = Pt(6)
                 
-                heading_para = doc.add_paragraph()
-                heading_run = heading_para.add_run(item.text)
-                heading_run.bold = True
-                heading_run.font.name = 'Arial'
+                # CORRIGIDO v6.4: Usa estilos nativos de Título do Word (para navegação e sumário)
+                # E aplica formatação customizada por cima
+                level = item.level if item.level else 2
+                heading_para = doc.add_heading(item.text, level=level)
                 
-                if item.level == 2:
-                    heading_run.font.size = Pt(16)
-                    heading_run.font.color.rgb = RGBColor(44, 62, 80)
-                elif item.level == 3:
-                    heading_run.font.size = Pt(14)
-                    heading_run.font.color.rgb = RGBColor(52, 73, 94)
-                else:
-                    heading_run.font.size = Pt(13)
-                    heading_run.font.color.rgb = RGBColor(60, 80, 100)
+                # Aplica formatação customizada mantendo o estilo do Word
+                for run in heading_para.runs:
+                    run.bold = True
+                    run.font.name = 'Arial'
+                    
+                    if level == 2:
+                        run.font.size = Pt(16)
+                        run.font.color.rgb = RGBColor(44, 62, 80)
+                    elif level == 3:
+                        run.font.size = Pt(14)
+                        run.font.color.rgb = RGBColor(52, 73, 94)
+                    elif level == 4:
+                        run.font.size = Pt(13)
+                        run.font.color.rgb = RGBColor(60, 80, 100)
+                    else:
+                        run.font.size = Pt(12)
+                        run.font.color.rgb = RGBColor(70, 90, 110)
                 
                 heading_para.space_before = Pt(12)
                 heading_para.space_after = Pt(6)

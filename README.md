@@ -8,7 +8,7 @@ git push
 
 OU
 
-git add -A && git commit -m "Correções no processo de geração do DOCX" && git push
+git add -A && git commit -m "Aplicando estilos ao DOCX" && git push
 
 ---
 
