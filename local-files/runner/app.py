@@ -1249,13 +1249,17 @@ async def generate_docx(payload: GenerateDocxPayload):
         style.font.name = 'Arial'
         style.font.size = Pt(12)
         
-        # TÍTULO
+        # TÍTULO - CORRIGIDO v6.4: Usa estilo Título 1 do Word + formatação customizada
         if payload.metadata.title:
-            title_para = doc.add_paragraph()
-            title_run = title_para.add_run(payload.metadata.title)
-            title_run.bold = True
-            title_run.font.size = Pt(28)
-            title_run.font.name = 'Arial'
+            title_para = doc.add_heading(payload.metadata.title, level=1)
+            
+            # Aplica formatação customizada
+            for run in title_para.runs:
+                run.bold = True
+                run.font.size = Pt(28)
+                run.font.name = 'Arial'
+                run.font.color.rgb = RGBColor(33, 37, 41)
+            
             title_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
             title_para.space_after = Pt(6)
         

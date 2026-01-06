@@ -8,7 +8,7 @@ git push
 
 OU
 
-git add -A && git commit -m "Aplicando estilos ao DOCX" && git push
+git add -A && git commit -m "Aplicando estilo ao título principal ao DOCX" && git push
 
 ---
 
