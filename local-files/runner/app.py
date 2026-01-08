@@ -1667,7 +1667,7 @@ def get_transcription_course(p: IDPayload):
             browser = pw.chromium.launch(headless=True)
             page = browser.new_page()
             login_alura(page, user, passwd)
-            
+
             page.goto(f"https://cursos.alura.com.br/admin/courses/v2/{p.id}", timeout=60000, wait_until="networkidle")
             page.wait_for_selector('div.form-group', timeout=60000)
             link_href = page.evaluate('''() => {
@@ -1713,3 +1713,416 @@ def get_transcription_course(p: IDPayload):
         return Response(content=json.dumps({"id": p.id, "nome": nome, "link": link, "transcricao": transcricoes}, ensure_ascii=False), media_type="application/json")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Falha: {e}")
+    
+
+# ============================================================================
+
+import time
+import json as json_module  # Renomeado para evitar conflito
+
+# Tenta importar UNO (só funciona com LibreOffice instalado)
+try:
+    import uno
+    from com.sun.star.beans import PropertyValue
+    LIBREOFFICE_DISPONIVEL = True
+except ImportError:
+    LIBREOFFICE_DISPONIVEL = False
+    print("⚠️ python3-uno não disponível - endpoints LibreOffice desabilitados")
+
+
+# ============================================================================
+# MODELOS
+# ============================================================================
+
+class RevisaoLibreOffice(BaseModel):
+    """Uma revisão a ser aplicada ao documento."""
+    tipo: str  # "SEO", "TECNICO", "TEXTO"
+    acao: str  # "substituir", "deletar", "inserir", "comentario"
+    paragrafo: int  # Índice do parágrafo (0-indexed)
+    inicio: int  # Posição inicial no parágrafo
+    fim: int  # Posição final no parágrafo
+    texto_novo: Optional[str] = ""
+    justificativa: str = ""
+
+
+class ExtrairTextoResponse(BaseModel):
+    """Resposta da extração de texto."""
+    paragrafos: list
+    texto_completo: str
+    total_paragrafos: int
+
+
+# ============================================================================
+# CONEXÃO COM LIBREOFFICE
+# ============================================================================
+
+class LibreOfficeConnection:
+    """Singleton para conexão com LibreOffice."""
+    
+    _desktop = None
+    
+    @classmethod
+    def get_desktop(cls):
+        if cls._desktop is None:
+            cls._connect()
+        return cls._desktop
+    
+    @classmethod
+    def _connect(cls, host="127.0.0.1", port=2002):
+        if not LIBREOFFICE_DISPONIVEL:
+            raise RuntimeError("python3-uno não instalado")
+        
+        local_context = uno.getComponentContext()
+        resolver = local_context.ServiceManager.createInstanceWithContext(
+            "com.sun.star.bridge.UnoUrlResolver", local_context
+        )
+        
+        for attempt in range(3):
+            try:
+                ctx = resolver.resolve(
+                    f"uno:socket,host={host},port={port};urp;StarOffice.ComponentContext"
+                )
+                smgr = ctx.ServiceManager
+                cls._desktop = smgr.createInstanceWithContext(
+                    "com.sun.star.frame.Desktop", ctx
+                )
+                return
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(2)
+                else:
+                    raise RuntimeError(f"Não conectou ao LibreOffice: {e}")
+    
+    @classmethod
+    def reset(cls):
+        """Reset da conexão (usar se LibreOffice reiniciar)."""
+        cls._desktop = None
+
+
+# ============================================================================
+# FUNÇÕES AUXILIARES
+# ============================================================================
+
+def _extrair_texto_lo(docx_path: str) -> dict:
+    """Extrai texto do documento com posições."""
+    desktop = LibreOfficeConnection.get_desktop()
+    
+    url = f"file://{os.path.abspath(docx_path)}"
+    props = (PropertyValue("Hidden", 0, True, 0),)
+    
+    doc = desktop.loadComponentFromURL(url, "_blank", 0, props)
+    if not doc:
+        raise RuntimeError(f"Não abriu: {docx_path}")
+    
+    try:
+        text = doc.getText()
+        enum = text.createEnumeration()
+        
+        paragrafos = []
+        texto_parts = []
+        idx = 0
+        
+        while enum.hasMoreElements():
+            element = enum.nextElement()
+            if element.supportsService("com.sun.star.text.Paragraph"):
+                texto = element.getString()
+                paragrafos.append({
+                    "indice": idx,
+                    "texto": texto,
+                    "tamanho": len(texto)
+                })
+                texto_parts.append(f"[P{idx}] {texto}")
+                idx += 1
+        
+        return {
+            "paragrafos": paragrafos,
+            "texto_completo": "\n".join(texto_parts),
+            "total_paragrafos": idx
+        }
+    finally:
+        doc.close(True)
+
+
+def _aplicar_revisoes_lo(docx_path: str, revisoes: list, autor: str, output_path: str) -> dict:
+    """Aplica revisões usando LibreOffice."""
+    desktop = LibreOfficeConnection.get_desktop()
+    
+    url = f"file://{os.path.abspath(docx_path)}"
+    props = (PropertyValue("Hidden", 0, True, 0),)
+    
+    doc = desktop.loadComponentFromURL(url, "_blank", 0, props)
+    if not doc:
+        raise RuntimeError(f"Não abriu: {docx_path}")
+    
+    try:
+        # Ativa Track Changes
+        doc.RedlineRecordOn = True
+        doc.RedlineDisplayType = 3
+        
+        # Obtém parágrafos
+        text = doc.getText()
+        enum = text.createEnumeration()
+        
+        paragrafos = []
+        while enum.hasMoreElements():
+            element = enum.nextElement()
+            if element.supportsService("com.sun.star.text.Paragraph"):
+                paragrafos.append(element)
+        
+        # Aplica em ordem reversa
+        revisoes_ord = sorted(
+            enumerate(revisoes),
+            key=lambda x: (x[1].paragrafo, x[1].inicio),
+            reverse=True
+        )
+        
+        resultados = []
+        
+        for idx_orig, rev in revisoes_ord:
+            try:
+                if rev.paragrafo >= len(paragrafos):
+                    resultados.append({"idx": idx_orig, "ok": False, "erro": "Parágrafo inexistente"})
+                    continue
+                
+                para = paragrafos[rev.paragrafo]
+                texto_para = para.getString()
+                
+                if rev.inicio < 0 or rev.fim > len(texto_para):
+                    resultados.append({"idx": idx_orig, "ok": False, "erro": "Posição inválida"})
+                    continue
+                
+                cursor = para.getText().createTextCursor()
+                cursor.gotoStart(False)
+                cursor.goRight(rev.inicio, False)
+                
+                if rev.acao == "substituir":
+                    cursor.goRight(rev.fim - rev.inicio, True)
+                    cursor.setString(rev.texto_novo)
+                    _add_comment_lo(doc, cursor, f"[{rev.tipo}] {rev.justificativa}", autor)
+                    resultados.append({"idx": idx_orig, "ok": True})
+                
+                elif rev.acao == "deletar":
+                    cursor.goRight(rev.fim - rev.inicio, True)
+                    cursor.setString("")
+                    _add_comment_lo(doc, cursor, f"[{rev.tipo}] {rev.justificativa}", autor)
+                    resultados.append({"idx": idx_orig, "ok": True})
+                
+                elif rev.acao == "inserir":
+                    cursor.getText().insertString(cursor, rev.texto_novo, False)
+                    _add_comment_lo(doc, cursor, f"[{rev.tipo}] {rev.justificativa}", autor)
+                    resultados.append({"idx": idx_orig, "ok": True})
+                
+                elif rev.acao == "comentario":
+                    cursor.goRight(rev.fim - rev.inicio, True)
+                    _add_comment_lo(doc, cursor, f"[{rev.tipo}] {rev.justificativa}", autor)
+                    resultados.append({"idx": idx_orig, "ok": True})
+                
+                else:
+                    resultados.append({"idx": idx_orig, "ok": False, "erro": f"Ação: {rev.acao}"})
+            
+            except Exception as e:
+                resultados.append({"idx": idx_orig, "ok": False, "erro": str(e)})
+        
+        # Salva
+        output_url = f"file://{os.path.abspath(output_path)}"
+        save_props = (
+            PropertyValue("FilterName", 0, "MS Word 2007 XML", 0),
+            PropertyValue("Overwrite", 0, True, 0),
+        )
+        doc.storeToURL(output_url, save_props)
+        
+        return {
+            "arquivo": output_path,
+            "total": len(revisoes),
+            "ok": sum(1 for r in resultados if r.get("ok")),
+            "falhas": sum(1 for r in resultados if not r.get("ok")),
+            "detalhes": sorted(resultados, key=lambda x: x["idx"])
+        }
+    finally:
+        doc.close(True)
+
+
+def _add_comment_lo(doc, cursor, texto: str, autor: str):
+    """Adiciona comentário."""
+    try:
+        ann = doc.createInstance("com.sun.star.text.TextField.Annotation")
+        ann.Author = autor
+        ann.Content = texto
+        cursor.getText().insertTextContent(cursor, ann, False)
+    except:
+        pass
+
+
+# ============================================================================
+# ENDPOINTS
+# ============================================================================
+
+@app.get("/libreoffice/status")
+async def libreoffice_status():
+    """Verifica se LibreOffice está disponível."""
+    if not LIBREOFFICE_DISPONIVEL:
+        return {"status": "indisponivel", "msg": "python3-uno não instalado"}
+    
+    try:
+        LibreOfficeConnection.get_desktop()
+        return {"status": "ok", "msg": "LibreOffice conectado"}
+    except Exception as e:
+        return {"status": "erro", "msg": str(e)}
+
+
+@app.post("/libreoffice/extrair-texto")
+async def libreoffice_extrair_texto(arquivo: UploadFile = File(...)):
+    """
+    Extrai texto do documento com posições.
+    
+    Retorna:
+    - paragrafos: lista com {indice, texto, tamanho}
+    - texto_completo: texto formatado com marcadores [P0], [P1], etc.
+    - total_paragrafos: quantidade total
+    
+    Use o texto_completo para enviar à IA e gerar revisões com posições.
+    """
+    if not LIBREOFFICE_DISPONIVEL:
+        raise HTTPException(500, "LibreOffice não disponível")
+    
+    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+        content = await arquivo.read()
+        tmp.write(content)
+        tmp_path = tmp.name
+    
+    try:
+        return _extrair_texto_lo(tmp_path)
+    finally:
+        os.unlink(tmp_path)
+
+
+@app.post("/libreoffice/extrair-texto-url")
+async def libreoffice_extrair_texto_url(url: str = Form(...)):
+    """Extrai texto de documento via URL."""
+    if not LIBREOFFICE_DISPONIVEL:
+        raise HTTPException(500, "LibreOffice não disponível")
+    
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(url)
+        if resp.status_code != 200:
+            raise HTTPException(400, f"Erro ao baixar: {resp.status_code}")
+    
+    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+        tmp.write(resp.content)
+        tmp_path = tmp.name
+    
+    try:
+        return _extrair_texto_lo(tmp_path)
+    finally:
+        os.unlink(tmp_path)
+
+
+@app.post("/libreoffice/aplicar-revisoes")
+async def libreoffice_aplicar_revisoes(
+    arquivo: UploadFile = File(...),
+    revisoes: str = Form(...),
+    autor: str = Form("Revisor IA")
+):
+    """
+    Aplica revisões ao documento com Track Changes real.
+    
+    Formato das revisões (JSON):
+    ```
+    [
+      {
+        "tipo": "SEO",
+        "acao": "substituir",
+        "paragrafo": 0,
+        "inicio": 0,
+        "fim": 20,
+        "texto_novo": "Novo texto",
+        "justificativa": "Motivo da alteração"
+      }
+    ]
+    ```
+    
+    Ações: substituir, deletar, inserir, comentario
+    """
+    if not LIBREOFFICE_DISPONIVEL:
+        raise HTTPException(500, "LibreOffice não disponível")
+    
+    try:
+        revisoes_list = json_module.loads(revisoes)
+        revisoes_parsed = [RevisaoLibreOffice(**r) for r in revisoes_list]
+    except Exception as e:
+        raise HTTPException(400, f"JSON inválido: {e}")
+    
+    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+        content = await arquivo.read()
+        tmp.write(content)
+        input_path = tmp.name
+    
+    output_path = input_path.replace(".docx", "_REVISADO.docx")
+    
+    try:
+        resultado = _aplicar_revisoes_lo(input_path, revisoes_parsed, autor, output_path)
+        
+        return FileResponse(
+            output_path,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            filename="documento_revisado.docx",
+            headers={
+                "X-Total": str(resultado["total"]),
+                "X-OK": str(resultado["ok"]),
+                "X-Falhas": str(resultado["falhas"])
+            }
+        )
+    finally:
+        if os.path.exists(input_path):
+            os.unlink(input_path)
+
+
+@app.post("/libreoffice/aplicar-revisoes-json")
+async def libreoffice_aplicar_revisoes_json(
+    docx_url: str = Form(...),
+    revisoes: str = Form(...),
+    autor: str = Form("Revisor IA")
+):
+    """
+    Aplica revisões via URL do documento.
+    Ideal para integração com n8n.
+    """
+    if not LIBREOFFICE_DISPONIVEL:
+        raise HTTPException(500, "LibreOffice não disponível")
+    
+    # Baixa documento
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(docx_url)
+        if resp.status_code != 200:
+            raise HTTPException(400, f"Erro ao baixar: {resp.status_code}")
+    
+    try:
+        revisoes_list = json_module.loads(revisoes)
+        revisoes_parsed = [RevisaoLibreOffice(**r) for r in revisoes_list]
+    except Exception as e:
+        raise HTTPException(400, f"JSON inválido: {e}")
+    
+    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+        tmp.write(resp.content)
+        input_path = tmp.name
+    
+    output_path = input_path.replace(".docx", "_REVISADO.docx")
+    
+    try:
+        resultado = _aplicar_revisoes_lo(input_path, revisoes_parsed, autor, output_path)
+        
+        return FileResponse(
+            output_path,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            filename="documento_revisado.docx"
+        )
+    finally:
+        if os.path.exists(input_path):
+            os.unlink(input_path)
+
+
+@app.post("/libreoffice/reset")
+async def libreoffice_reset():
+    """Reset da conexão com LibreOffice (usar após reiniciar o serviço)."""
+    LibreOfficeConnection.reset()
+    return {"msg": "Conexão resetada. Próxima chamada reconectará."}

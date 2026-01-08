@@ -8,7 +8,7 @@ git push
 
 OU
 
-git add -A && git commit -m "Adiciona LibreOffice UNO para Track Changes" && git push
+git add -A && git commit -m "Adicionando processo de controle de alteração em app.py" && git push
 
 ---
 
