@@ -12,3 +12,4 @@ openai
 python-docx
 httpx
 Pillow
+defusedxml
