@@ -8,7 +8,7 @@ git push
 
 OU
 
-git add -A && git commit -m "Adicionando processo de controle de alteração em app.py" && git push
+git add -A && git commit -m "Fix: Adicionar Form ao import e reorganizar código completo" && git push
 
 ---
 
