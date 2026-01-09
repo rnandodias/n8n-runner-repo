@@ -1135,8 +1135,10 @@ def _aplicar_revisoes_lo(docx_path: str, revisoes: list, autor: str, output_path
         raise RuntimeError(f"Não abriu: {docx_path}")
     
     try:
-        doc.RedlineRecordOn = True
-        doc.RedlineDisplayType = 3
+        # Ativa Track Changes (RedlineRecord)
+        doc.setPropertyValue("RecordChanges", True)
+        # Mostra todas as mudanças (ShowChanges + ShowVisibleChanges)
+        doc.setPropertyValue("ShowChanges", True)
         
         text = doc.getText()
         enum = text.createEnumeration()

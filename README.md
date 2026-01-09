@@ -8,7 +8,7 @@ git push
 
 OU
 
-git add -A && git commit -m "Fix: Adicionar Form ao import e reorganizar código completo" && git push
+git add -A && git commit -m "Ajuste no LibreOffice UNO" && git push
 
 ---
 
