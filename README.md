@@ -8,7 +8,7 @@ git push
 
 OU
 
-git add -A && git commit -m "Ajuste no LibreOffice UNO" && git push
+git add -A && git commit -m "Fix: Sistema de revisão com busca inteligente" && git push
 
 ---
 

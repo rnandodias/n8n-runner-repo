@@ -155,6 +155,7 @@ class RevisaoLibreOffice(BaseModel):
     paragrafo: int  # Índice do parágrafo (0-indexed)
     inicio: int  # Posição inicial no parágrafo
     fim: int  # Posição final no parágrafo
+    texto_esperado: str = ""  # Texto que DEVERIA estar nesta posição (validação)
     texto_novo: Optional[str] = ""
     justificativa: str = ""
 
@@ -1124,7 +1125,7 @@ def _extrair_texto_lo(docx_path: str) -> dict:
 
 
 def _aplicar_revisoes_lo(docx_path: str, revisoes: list, autor: str, output_path: str) -> dict:
-    """Aplica revisões usando LibreOffice."""
+    """Aplica revisões usando LibreOffice com busca inteligente e validação."""
     desktop = LibreOfficeConnection.get_desktop()
     
     url = f"file://{os.path.abspath(docx_path)}"
@@ -1135,20 +1136,24 @@ def _aplicar_revisoes_lo(docx_path: str, revisoes: list, autor: str, output_path
         raise RuntimeError(f"Não abriu: {docx_path}")
     
     try:
-        # Ativa Track Changes (RedlineRecord)
+        # Ativa Track Changes
         doc.setPropertyValue("RecordChanges", True)
-        # Mostra todas as mudanças (ShowChanges + ShowVisibleChanges)
         doc.setPropertyValue("ShowChanges", True)
         
         text = doc.getText()
         enum = text.createEnumeration()
         
+        # Extrai parágrafos E seus textos
         paragrafos = []
+        textos_paragrafos = []
         while enum.hasMoreElements():
             element = enum.nextElement()
             if element.supportsService("com.sun.star.text.Paragraph"):
+                texto = element.getString()
                 paragrafos.append(element)
+                textos_paragrafos.append(texto)
         
+        # Aplica revisões em ordem reversa
         revisoes_ord = sorted(
             enumerate(revisoes),
             key=lambda x: (x[1].paragrafo, x[1].inicio),
@@ -1160,48 +1165,123 @@ def _aplicar_revisoes_lo(docx_path: str, revisoes: list, autor: str, output_path
         for idx_orig, rev in revisoes_ord:
             try:
                 if rev.paragrafo >= len(paragrafos):
-                    resultados.append({"idx": idx_orig, "ok": False, "erro": "Parágrafo inexistente"})
+                    resultados.append({
+                        "idx": idx_orig,
+                        "ok": False,
+                        "erro": f"Parágrafo {rev.paragrafo} não existe (máx: {len(paragrafos)-1})"
+                    })
                     continue
                 
                 para = paragrafos[rev.paragrafo]
-                texto_para = para.getString()
+                texto_para = textos_paragrafos[rev.paragrafo]
                 
-                if rev.inicio < 0 or rev.fim > len(texto_para):
-                    resultados.append({"idx": idx_orig, "ok": False, "erro": "Posição inválida"})
+                # VALIDAÇÃO E BUSCA INTELIGENTE
+                inicio_real = rev.inicio
+                fim_real = rev.fim
+                
+                # Verifica se as posições são válidas
+                if inicio_real < 0 or fim_real > len(texto_para) or inicio_real > fim_real:
+                    resultados.append({
+                        "idx": idx_orig,
+                        "ok": False,
+                        "erro": f"Posições inválidas: [{inicio_real}:{fim_real}] (tamanho: {len(texto_para)})"
+                    })
                     continue
                 
+                # Se tem texto_esperado, valida e procura se necessário
+                if hasattr(rev, 'texto_esperado') and rev.texto_esperado and rev.acao in ["substituir", "deletar", "comentario"]:
+                    texto_atual = texto_para[inicio_real:fim_real]
+                    
+                    # Compara ignorando espaços extras
+                    texto_atual_norm = ' '.join(texto_atual.split())
+                    texto_esperado_norm = ' '.join(rev.texto_esperado.split())
+                    
+                    if texto_atual_norm != texto_esperado_norm:
+                        # Texto não corresponde! Tenta encontrar
+                        print(f"⚠️ Revisão {idx_orig}: texto não corresponde. Buscando...")
+                        print(f"  Esperado: '{texto_esperado_norm[:50]}...'")
+                        print(f"  Atual: '{texto_atual_norm[:50]}...'")
+                        
+                        # Procura o texto esperado no parágrafo
+                        pos_encontrada = texto_para.find(rev.texto_esperado)
+                        
+                        if pos_encontrada == -1:
+                            # Tenta busca fuzzy (ignorando espaços)
+                            texto_para_norm = ' '.join(texto_para.split())
+                            pos_encontrada_norm = texto_para_norm.find(texto_esperado_norm)
+                            
+                            if pos_encontrada_norm != -1:
+                                # Encontrou! Ajusta posição aproximada
+                                # (não é perfeito mas é melhor que nada)
+                                inicio_real = max(0, pos_encontrada_norm - 10)
+                                fim_real = min(len(texto_para), pos_encontrada_norm + len(texto_esperado_norm) + 10)
+                                print(f"✅ Encontrado (fuzzy): aproximado em [{inicio_real}:{fim_real}]")
+                            else:
+                                resultados.append({
+                                    "idx": idx_orig,
+                                    "ok": False,
+                                    "erro": f"Texto esperado não encontrado: '{rev.texto_esperado[:30]}...'"
+                                })
+                                continue
+                        else:
+                            inicio_real = pos_encontrada
+                            fim_real = pos_encontrada + len(rev.texto_esperado)
+                            print(f"✅ Encontrado: [{inicio_real}:{fim_real}]")
+                
+                # Cria cursor na posição correta
                 cursor = para.getText().createTextCursor()
                 cursor.gotoStart(False)
-                cursor.goRight(rev.inicio, False)
                 
+                # Move cursor para a posição
+                if inicio_real > 0:
+                    cursor.goRight(inicio_real, False)
+                
+                # Aplica a ação
                 if rev.acao == "substituir":
-                    cursor.goRight(rev.fim - rev.inicio, True)
+                    tamanho_selecao = fim_real - inicio_real
+                    if tamanho_selecao > 0:
+                        cursor.goRight(tamanho_selecao, True)
                     cursor.setString(rev.texto_novo)
                     _add_comment_lo(doc, cursor, f"[{rev.tipo}] {rev.justificativa}", autor)
                     resultados.append({"idx": idx_orig, "ok": True})
                 
                 elif rev.acao == "deletar":
-                    cursor.goRight(rev.fim - rev.inicio, True)
+                    tamanho_selecao = fim_real - inicio_real
+                    if tamanho_selecao > 0:
+                        cursor.goRight(tamanho_selecao, True)
                     cursor.setString("")
-                    _add_comment_lo(doc, cursor, f"[{rev.tipo}] {rev.justificativa}", autor)
+                    _add_comment_lo(doc, cursor, f"[{rev.tipo}] Removido: {rev.justificativa}", autor)
                     resultados.append({"idx": idx_orig, "ok": True})
                 
                 elif rev.acao == "inserir":
                     cursor.getText().insertString(cursor, rev.texto_novo, False)
-                    _add_comment_lo(doc, cursor, f"[{rev.tipo}] {rev.justificativa}", autor)
+                    _add_comment_lo(doc, cursor, f"[{rev.tipo}] Inserido: {rev.justificativa}", autor)
                     resultados.append({"idx": idx_orig, "ok": True})
                 
                 elif rev.acao == "comentario":
-                    cursor.goRight(rev.fim - rev.inicio, True)
+                    tamanho_selecao = fim_real - inicio_real
+                    if tamanho_selecao > 0:
+                        cursor.goRight(tamanho_selecao, True)
                     _add_comment_lo(doc, cursor, f"[{rev.tipo}] {rev.justificativa}", autor)
                     resultados.append({"idx": idx_orig, "ok": True})
                 
                 else:
-                    resultados.append({"idx": idx_orig, "ok": False, "erro": f"Ação: {rev.acao}"})
+                    resultados.append({
+                        "idx": idx_orig,
+                        "ok": False,
+                        "erro": f"Ação desconhecida: {rev.acao}"
+                    })
             
             except Exception as e:
-                resultados.append({"idx": idx_orig, "ok": False, "erro": str(e)})
+                import traceback
+                traceback.print_exc()
+                resultados.append({
+                    "idx": idx_orig,
+                    "ok": False,
+                    "erro": f"Exceção: {str(e)}"
+                })
         
+        # Salva documento
         output_url = f"file://{os.path.abspath(output_path)}"
         save_props = (
             PropertyValue("FilterName", 0, "MS Word 2007 XML", 0),
@@ -1218,6 +1298,7 @@ def _aplicar_revisoes_lo(docx_path: str, revisoes: list, autor: str, output_path
         }
     finally:
         doc.close(True)
+
 
 
 def _add_comment_lo(doc, cursor, texto: str, autor: str):
