@@ -8,7 +8,7 @@ git push
 
 OU
 
-git add -A && git commit -m "Fix: Sistema de revisão com busca inteligente" && git push
+git add -A && git commit -m "Adicionando novos endpoints (agentes de revisão e track changes)" && git push
 
 ---
 

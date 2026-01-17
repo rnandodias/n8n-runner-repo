@@ -9,6 +9,7 @@ ffmpeg-python
 python-multipart
 requests
 openai
+anthropic
 python-docx
 httpx
 Pillow

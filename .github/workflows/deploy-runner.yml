@@ -45,6 +45,8 @@ jobs:
               'LINKEDIN_USER=${{ secrets.LINKEDIN_USER }}' \
               'LINKEDIN_PASS=${{ secrets.LINKEDIN_PASS }}' \
               'OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}' \
+              'ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}' \
+              'LLM_PROVIDER=${{ secrets.LLM_PROVIDER }}' \
               > /opt/n8n-runner/.env && \
             chmod 600 /opt/n8n-runner/.env
           "

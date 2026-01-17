@@ -8,3 +8,6 @@ __pycache__/
 
 # Local-only files (não commitar secrets)
 .env
+
+# Testes locais (não fazem parte do deploy)
+local-tests/
