@@ -11,3 +11,6 @@ __pycache__/
 
 # Testes locais (não fazem parte do deploy)
 local-tests/
+
+# Workflows n8n (exemplos locais)
+workflows/

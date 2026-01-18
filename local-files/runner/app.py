@@ -190,19 +190,22 @@ class RevisaoItem(BaseModel):
 
 class AplicarRevisoesPayload(BaseModel):
     """Payload para aplicar revisões via JSON."""
-    docx_url: str  # URL do documento DOCX
+    docx_url: Optional[str] = None  # URL do documento DOCX
+    docx_base64: Optional[str] = None  # Ou base64 do documento
     revisoes: List[RevisaoItem]  # Lista de revisões
     autor: str = "Agente IA Revisor"
 
 
 class ExtrairTextoDocxPayload(BaseModel):
     """Payload para extrair texto de DOCX."""
-    docx_url: str
+    docx_url: Optional[str] = None
+    docx_base64: Optional[str] = None
 
 
 class RevisaoAgentPayload(BaseModel):
     """Payload para executar um agente de revisão."""
-    docx_url: str  # URL do documento DOCX
+    docx_url: Optional[str] = None  # URL do documento DOCX
+    docx_base64: Optional[str] = None  # Ou base64 do documento
     provider: str = "anthropic"  # "anthropic" ou "openai"
     guia_seo_url: Optional[str] = None  # URL do guia de SEO (apenas para agente SEO)
     url_artigo: Optional[str] = ""  # URL original do artigo (contexto)
@@ -213,6 +216,25 @@ class RevisaoAgentPayload(BaseModel):
 # ============================================================================
 # HELPERS - GERAIS
 # ============================================================================
+
+async def obter_docx_bytes(docx_url: Optional[str], docx_base64: Optional[str], http_client=None) -> bytes:
+    """Obtém bytes do DOCX a partir de URL ou base64."""
+    if docx_base64:
+        import base64
+        return base64.b64decode(docx_base64)
+    elif docx_url:
+        if http_client is None:
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.get(docx_url)
+                resp.raise_for_status()
+                return resp.content
+        else:
+            resp = await http_client.get(docx_url)
+            resp.raise_for_status()
+            return resp.content
+    else:
+        raise ValueError("Deve fornecer docx_url ou docx_base64")
+
 
 def gerar_codigo_cursos(nome_curso: str) -> str:
     nome = unidecode(nome_curso)
@@ -1850,13 +1872,15 @@ async def revisao_extrair_texto(payload: ExtrairTextoDocxPayload):
 
     Retorna paragrafos com indices para referencia nas revisoes.
     """
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await client.get(payload.docx_url)
-        if resp.status_code != 200:
-            raise HTTPException(400, f"Erro ao baixar documento: {resp.status_code}")
+    try:
+        docx_bytes = await obter_docx_bytes(payload.docx_url, payload.docx_base64)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(400, f"Erro ao obter documento: {str(e)}")
 
     with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
-        tmp.write(resp.content)
+        tmp.write(docx_bytes)
         tmp_path = tmp.name
 
     try:
@@ -1901,7 +1925,8 @@ async def revisao_aplicar(payload: AplicarRevisoesPayload):
     Aplica revisoes a um documento DOCX com Track Changes.
 
     Recebe:
-    - docx_url: URL do documento original
+    - docx_url: URL do documento original (ou docx_base64)
+    - docx_base64: Documento em base64 (ou docx_url)
     - revisoes: Lista de revisoes no formato:
         {
             "tipo": "SEO|TECNICO|TEXTO",
@@ -1914,15 +1939,17 @@ async def revisao_aplicar(payload: AplicarRevisoesPayload):
 
     Retorna: Documento DOCX com Track Changes aplicados
     """
-    # Baixa o documento
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await client.get(payload.docx_url)
-        if resp.status_code != 200:
-            raise HTTPException(400, f"Erro ao baixar documento: {resp.status_code}")
+    # Obtém bytes do documento
+    try:
+        docx_bytes = await obter_docx_bytes(payload.docx_url, payload.docx_base64)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(400, f"Erro ao obter documento: {str(e)}")
 
     # Salva em arquivo temporario
     with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
-        tmp.write(resp.content)
+        tmp.write(docx_bytes)
         input_path = tmp.name
 
     output_path = input_path.replace(".docx", "_revisado.docx")
@@ -2062,21 +2089,25 @@ async def revisao_agente_seo(payload: RevisaoAgentPayload):
     Analisa o documento e retorna JSON com sugestoes de SEO.
 
     Parametros:
-    - docx_url: URL do documento DOCX
+    - docx_url: URL do documento DOCX (ou docx_base64)
+    - docx_base64: Documento em base64 (ou docx_url)
     - guia_seo_url: URL do guia de SEO (opcional)
     - url_artigo: URL original do artigo (contexto)
     - titulo: Titulo do artigo (contexto)
     """
-    # Baixa o documento
-    async with httpx.AsyncClient(timeout=60.0) as http_client:
-        resp = await http_client.get(payload.docx_url)
-        if resp.status_code != 200:
-            raise HTTPException(400, f"Erro ao baixar documento: {resp.status_code}")
+    # Obtém bytes do documento
+    try:
+        docx_bytes = await obter_docx_bytes(payload.docx_url, payload.docx_base64)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(400, f"Erro ao obter documento: {str(e)}")
 
-        # Baixa guia de SEO se fornecido
-        guia_seo = "Use boas praticas gerais de SEO para conteudo tecnico educacional."
-        if payload.guia_seo_url:
-            try:
+    # Baixa guia de SEO se fornecido
+    guia_seo = "Use boas praticas gerais de SEO para conteudo tecnico educacional."
+    if payload.guia_seo_url:
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as http_client:
                 guia_resp = await http_client.get(payload.guia_seo_url)
                 if guia_resp.status_code == 200:
                     with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
@@ -2085,12 +2116,12 @@ async def revisao_agente_seo(payload: RevisaoAgentPayload):
                     guia_doc = Document(guia_path)
                     guia_seo = "\n".join([p.text for p in guia_doc.paragraphs if p.text.strip()])
                     os.unlink(guia_path)
-            except Exception as e:
-                print(f"Aviso: Nao foi possivel carregar guia SEO: {e}")
+        except Exception as e:
+            print(f"Aviso: Nao foi possivel carregar guia SEO: {e}")
 
     # Salva documento temporario
     with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
-        tmp.write(resp.content)
+        tmp.write(docx_bytes)
         tmp_path = tmp.name
 
     try:
@@ -2135,20 +2166,23 @@ async def revisao_agente_tecnico(payload: RevisaoAgentPayload):
     Analisa o documento e retorna JSON com correcoes tecnicas.
 
     Parametros:
-    - docx_url: URL do documento DOCX
+    - docx_url: URL do documento DOCX (ou docx_base64)
+    - docx_base64: Documento em base64 (ou docx_url)
     - url_artigo: URL original do artigo (contexto)
     - titulo: Titulo do artigo (contexto)
     - data_publicacao: Data de publicacao original
     """
-    # Baixa o documento
-    async with httpx.AsyncClient(timeout=60.0) as http_client:
-        resp = await http_client.get(payload.docx_url)
-        if resp.status_code != 200:
-            raise HTTPException(400, f"Erro ao baixar documento: {resp.status_code}")
+    # Obtém bytes do documento
+    try:
+        docx_bytes = await obter_docx_bytes(payload.docx_url, payload.docx_base64)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(400, f"Erro ao obter documento: {str(e)}")
 
     # Salva documento temporario
     with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
-        tmp.write(resp.content)
+        tmp.write(docx_bytes)
         tmp_path = tmp.name
 
     try:
@@ -2193,19 +2227,22 @@ async def revisao_agente_texto(payload: RevisaoAgentPayload):
     Analisa o documento e retorna JSON com melhorias de texto.
 
     Parametros:
-    - docx_url: URL do documento DOCX
+    - docx_url: URL do documento DOCX (ou docx_base64)
+    - docx_base64: Documento em base64 (ou docx_url)
     - url_artigo: URL original do artigo (contexto)
     - titulo: Titulo do artigo (contexto)
     """
-    # Baixa o documento
-    async with httpx.AsyncClient(timeout=60.0) as http_client:
-        resp = await http_client.get(payload.docx_url)
-        if resp.status_code != 200:
-            raise HTTPException(400, f"Erro ao baixar documento: {resp.status_code}")
+    # Obtém bytes do documento
+    try:
+        docx_bytes = await obter_docx_bytes(payload.docx_url, payload.docx_base64)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(400, f"Erro ao obter documento: {str(e)}")
 
     # Salva documento temporario
     with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
-        tmp.write(resp.content)
+        tmp.write(docx_bytes)
         tmp_path = tmp.name
 
     try:
