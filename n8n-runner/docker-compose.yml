@@ -11,7 +11,6 @@ services:
       - LINKEDIN_PASS=${LINKEDIN_PASS}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - LLM_PROVIDER=${LLM_PROVIDER:-anthropic}
     volumes:
       - /local-files:/files
 

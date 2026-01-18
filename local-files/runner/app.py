@@ -203,6 +203,7 @@ class ExtrairTextoDocxPayload(BaseModel):
 class RevisaoAgentPayload(BaseModel):
     """Payload para executar um agente de revisão."""
     docx_url: str  # URL do documento DOCX
+    provider: str = "anthropic"  # "anthropic" ou "openai"
     guia_seo_url: Optional[str] = None  # URL do guia de SEO (apenas para agente SEO)
     url_artigo: Optional[str] = ""  # URL original do artigo (contexto)
     titulo: Optional[str] = ""  # Título do artigo (contexto)
@@ -2106,7 +2107,7 @@ async def revisao_agente_seo(payload: RevisaoAgentPayload):
         )
 
         # Chama LLM
-        llm_client = criar_cliente_llm()
+        llm_client = criar_cliente_llm(provider=payload.provider)
         resposta = llm_client.gerar_resposta(system_prompt, user_prompt)
         revisoes = llm_client.extrair_json(resposta)
 
@@ -2164,7 +2165,7 @@ async def revisao_agente_tecnico(payload: RevisaoAgentPayload):
         )
 
         # Chama LLM
-        llm_client = criar_cliente_llm()
+        llm_client = criar_cliente_llm(provider=payload.provider)
         resposta = llm_client.gerar_resposta(system_prompt, user_prompt)
         revisoes = llm_client.extrair_json(resposta)
 
@@ -2220,7 +2221,7 @@ async def revisao_agente_texto(payload: RevisaoAgentPayload):
         )
 
         # Chama LLM
-        llm_client = criar_cliente_llm()
+        llm_client = criar_cliente_llm(provider=payload.provider)
         resposta = llm_client.gerar_resposta(system_prompt, user_prompt)
         revisoes = llm_client.extrair_json(resposta)
 
