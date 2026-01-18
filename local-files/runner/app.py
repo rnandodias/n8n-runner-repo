@@ -2315,6 +2315,210 @@ async def revisao_agente_texto(payload: RevisaoAgentPayload):
 
 
 # ============================================================================
+# ENDPOINTS - REVISAO VIA FORM (MULTIPART) - Para uso com n8n
+# ============================================================================
+
+@app.post("/revisao/agente-seo-form")
+async def revisao_agente_seo_form(
+    file: UploadFile = File(...),
+    provider: str = Form("anthropic"),
+    url_artigo: str = Form(""),
+    titulo: str = Form("")
+):
+    """
+    Executa o agente de revisao SEO via upload de arquivo.
+    Ideal para uso com n8n HTTP Request node.
+    """
+    # Salva arquivo temporario
+    docx_bytes = await file.read()
+    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+        tmp.write(docx_bytes)
+        tmp.flush()
+        tmp_path = tmp.name
+
+    try:
+        # Extrai texto
+        conteudo, titulo_extraido = _extrair_texto_para_revisao(tmp_path)
+        titulo_final = titulo or titulo_extraido
+
+        # Formata prompts
+        guia_seo = "Use boas praticas gerais de SEO para conteudo tecnico educacional."
+        system_prompt, user_prompt = formatar_prompt_seo(
+            conteudo=conteudo,
+            titulo=titulo_final,
+            url=url_artigo,
+            guia_seo=guia_seo
+        )
+
+        # Chama LLM
+        llm_client = criar_cliente_llm(provider=provider)
+        resposta = llm_client.gerar_resposta(system_prompt, user_prompt)
+        revisoes = llm_client.extrair_json(resposta)
+
+        for rev in revisoes:
+            rev["tipo"] = "SEO"
+
+        return {
+            "tipo": "SEO",
+            "total_sugestoes": len(revisoes),
+            "revisoes": revisoes
+        }
+
+    except Exception as e:
+        raise HTTPException(500, f"Erro no agente SEO: {str(e)}")
+    finally:
+        os.unlink(tmp_path)
+
+
+@app.post("/revisao/agente-tecnico-form")
+async def revisao_agente_tecnico_form(
+    file: UploadFile = File(...),
+    provider: str = Form("anthropic"),
+    url_artigo: str = Form(""),
+    titulo: str = Form(""),
+    data_publicacao: str = Form("")
+):
+    """
+    Executa o agente de revisao TECNICA via upload de arquivo.
+    Ideal para uso com n8n HTTP Request node.
+    """
+    docx_bytes = await file.read()
+    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+        tmp.write(docx_bytes)
+        tmp.flush()
+        tmp_path = tmp.name
+
+    try:
+        conteudo, titulo_extraido = _extrair_texto_para_revisao(tmp_path)
+        titulo_final = titulo or titulo_extraido
+
+        system_prompt, user_prompt = formatar_prompt_tecnico(
+            conteudo=conteudo,
+            titulo=titulo_final,
+            url=url_artigo,
+            data_publicacao=data_publicacao
+        )
+
+        llm_client = criar_cliente_llm(provider=provider)
+        resposta = llm_client.gerar_resposta(system_prompt, user_prompt)
+        revisoes = llm_client.extrair_json(resposta)
+
+        for rev in revisoes:
+            rev["tipo"] = "TECNICO"
+
+        return {
+            "tipo": "TECNICO",
+            "total_sugestoes": len(revisoes),
+            "revisoes": revisoes
+        }
+
+    except Exception as e:
+        raise HTTPException(500, f"Erro no agente TECNICO: {str(e)}")
+    finally:
+        os.unlink(tmp_path)
+
+
+@app.post("/revisao/agente-texto-form")
+async def revisao_agente_texto_form(
+    file: UploadFile = File(...),
+    provider: str = Form("anthropic"),
+    url_artigo: str = Form(""),
+    titulo: str = Form("")
+):
+    """
+    Executa o agente de revisao TEXTUAL via upload de arquivo.
+    Ideal para uso com n8n HTTP Request node.
+    """
+    docx_bytes = await file.read()
+    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+        tmp.write(docx_bytes)
+        tmp.flush()
+        tmp_path = tmp.name
+
+    try:
+        conteudo, titulo_extraido = _extrair_texto_para_revisao(tmp_path)
+        titulo_final = titulo or titulo_extraido
+
+        system_prompt, user_prompt = formatar_prompt_texto(
+            conteudo=conteudo,
+            titulo=titulo_final,
+            url=url_artigo
+        )
+
+        llm_client = criar_cliente_llm(provider=provider)
+        resposta = llm_client.gerar_resposta(system_prompt, user_prompt)
+        revisoes = llm_client.extrair_json(resposta)
+
+        for rev in revisoes:
+            rev["tipo"] = "TEXTO"
+
+        return {
+            "tipo": "TEXTO",
+            "total_sugestoes": len(revisoes),
+            "revisoes": revisoes
+        }
+
+    except Exception as e:
+        raise HTTPException(500, f"Erro no agente TEXTO: {str(e)}")
+    finally:
+        os.unlink(tmp_path)
+
+
+@app.post("/revisao/aplicar-form")
+async def revisao_aplicar_form(
+    file: UploadFile = File(...),
+    revisoes: str = Form(...),
+    autor: str = Form("Agente IA Revisor")
+):
+    """
+    Aplica revisoes a um documento DOCX via upload de arquivo.
+    Ideal para uso com n8n HTTP Request node.
+
+    - file: Arquivo DOCX
+    - revisoes: JSON string com lista de revisoes
+    - autor: Nome do autor das revisoes
+    """
+    import json as json_lib
+
+    docx_bytes = await file.read()
+    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+        tmp.write(docx_bytes)
+        tmp.flush()
+        input_path = tmp.name
+
+    output_path = input_path.replace(".docx", "_revisado.docx")
+
+    try:
+        revisoes_list = json_lib.loads(revisoes)
+
+        resultado = aplicar_revisoes_docx(
+            input_path,
+            output_path,
+            revisoes_list,
+            autor
+        )
+
+        return FileResponse(
+            output_path,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            filename="documento_revisado.docx",
+            headers={
+                "X-Total-Revisoes": str(resultado["total_revisoes"]),
+                "X-Aplicadas": str(resultado["aplicadas"]),
+                "X-Falhas": str(resultado["falhas"]),
+                "X-Comentarios": str(resultado["comentarios"])
+            }
+        )
+    except json_lib.JSONDecodeError as e:
+        raise HTTPException(400, f"JSON de revisoes invalido: {str(e)}")
+    except Exception as e:
+        raise HTTPException(500, f"Erro ao aplicar revisoes: {str(e)}")
+    finally:
+        if os.path.exists(input_path):
+            os.unlink(input_path)
+
+
+# ============================================================================
 # ENDPOINTS - VÍDEO
 # ============================================================================
 
