@@ -2099,9 +2099,17 @@ async def revisao_agente_seo(payload: RevisaoAgentPayload):
     - url_artigo: URL original do artigo (contexto)
     - titulo: Titulo do artigo (contexto)
     """
+    # Debug: log o que está chegando
+    print(f"[DEBUG] docx_url: {payload.docx_url[:100] if payload.docx_url else None}...")
+    print(f"[DEBUG] docx_base64 type: {type(payload.docx_base64)}")
+    print(f"[DEBUG] docx_base64 len: {len(payload.docx_base64) if payload.docx_base64 else 0}")
+    print(f"[DEBUG] docx_base64 preview: {payload.docx_base64[:200] if payload.docx_base64 else None}...")
+
     # Obtém bytes do documento
     try:
         docx_bytes = await obter_docx_bytes(payload.docx_url, payload.docx_base64)
+        print(f"[DEBUG] docx_bytes len: {len(docx_bytes)}")
+        print(f"[DEBUG] docx_bytes header: {docx_bytes[:20]}")
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
