@@ -221,6 +221,10 @@ async def obter_docx_bytes(docx_url: Optional[str], docx_base64: Optional[str], 
     """Obtém bytes do DOCX a partir de URL ou base64."""
     if docx_base64:
         import base64
+        # Remove prefixo data:... se presente
+        if docx_base64.startswith("data:"):
+            # Formato: data:application/...;base64,XXXXXX
+            docx_base64 = docx_base64.split(",", 1)[1]
         return base64.b64decode(docx_base64)
     elif docx_url:
         if http_client is None:
@@ -2122,9 +2126,17 @@ async def revisao_agente_seo(payload: RevisaoAgentPayload):
     # Salva documento temporario
     with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
         tmp.write(docx_bytes)
+        tmp.flush()
         tmp_path = tmp.name
 
     try:
+        # Verifica se arquivo existe e tem conteúdo
+        if not os.path.exists(tmp_path):
+            raise HTTPException(500, f"Arquivo temporario nao foi criado: {tmp_path}")
+        file_size = os.path.getsize(tmp_path)
+        if file_size == 0:
+            raise HTTPException(400, "Documento DOCX vazio ou base64 invalido")
+
         # Extrai texto
         conteudo, titulo_extraido = _extrair_texto_para_revisao(tmp_path)
         titulo = payload.titulo or titulo_extraido
@@ -2183,9 +2195,17 @@ async def revisao_agente_tecnico(payload: RevisaoAgentPayload):
     # Salva documento temporario
     with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
         tmp.write(docx_bytes)
+        tmp.flush()
         tmp_path = tmp.name
 
     try:
+        # Verifica se arquivo existe e tem conteúdo
+        if not os.path.exists(tmp_path):
+            raise HTTPException(500, f"Arquivo temporario nao foi criado: {tmp_path}")
+        file_size = os.path.getsize(tmp_path)
+        if file_size == 0:
+            raise HTTPException(400, "Documento DOCX vazio ou base64 invalido")
+
         # Extrai texto
         conteudo, titulo_extraido = _extrair_texto_para_revisao(tmp_path)
         titulo = payload.titulo or titulo_extraido
@@ -2243,9 +2263,17 @@ async def revisao_agente_texto(payload: RevisaoAgentPayload):
     # Salva documento temporario
     with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
         tmp.write(docx_bytes)
+        tmp.flush()
         tmp_path = tmp.name
 
     try:
+        # Verifica se arquivo existe e tem conteúdo
+        if not os.path.exists(tmp_path):
+            raise HTTPException(500, f"Arquivo temporario nao foi criado: {tmp_path}")
+        file_size = os.path.getsize(tmp_path)
+        if file_size == 0:
+            raise HTTPException(400, "Documento DOCX vazio ou base64 invalido")
+
         # Extrai texto
         conteudo, titulo_extraido = _extrair_texto_para_revisao(tmp_path)
         titulo = payload.titulo or titulo_extraido
