@@ -8,7 +8,7 @@ git push
 
 OU
 
-git add -A && git commit -m "Ajuste nos endpoints dos agentes para aceitar multiplos formatos de entrada" && git push
+git add -A && git commit -m "Incluindo possibilidade de passas palavra-chave e gui SEO" && git push
 
 ---
 

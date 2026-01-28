@@ -2323,11 +2323,21 @@ async def revisao_agente_seo_form(
     file: UploadFile = File(...),
     provider: str = Form("anthropic"),
     url_artigo: str = Form(""),
-    titulo: str = Form("")
+    titulo: str = Form(""),
+    guia_seo_file: Optional[UploadFile] = File(None),
+    palavras_chave: str = Form("")
 ):
     """
     Executa o agente de revisao SEO via upload de arquivo.
     Ideal para uso com n8n HTTP Request node.
+
+    Parametros:
+    - file: Arquivo DOCX do artigo a ser revisado
+    - provider: "anthropic" ou "openai"
+    - url_artigo: URL original do artigo
+    - titulo: Titulo do artigo (opcional, extraido do DOCX se nao fornecido)
+    - guia_seo_file: Arquivo DOCX com o guia de SEO da empresa (opcional)
+    - palavras_chave: Palavras-chave do Google separadas por virgula ou quebra de linha
     """
     # Salva arquivo temporario
     docx_bytes = await file.read()
@@ -2336,18 +2346,40 @@ async def revisao_agente_seo_form(
         tmp.flush()
         tmp_path = tmp.name
 
+    guia_path = None
+
     try:
-        # Extrai texto
+        # Extrai texto do artigo
         conteudo, titulo_extraido = _extrair_texto_para_revisao(tmp_path)
         titulo_final = titulo or titulo_extraido
 
-        # Formata prompts
+        # Extrai guia SEO se fornecido
         guia_seo = "Use boas praticas gerais de SEO para conteudo tecnico educacional."
+        if guia_seo_file and guia_seo_file.filename:
+            guia_bytes = await guia_seo_file.read()
+            with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp_guia:
+                tmp_guia.write(guia_bytes)
+                tmp_guia.flush()
+                guia_path = tmp_guia.name
+
+            guia_doc = Document(guia_path)
+            guia_seo = "\n".join([p.text for p in guia_doc.paragraphs if p.text.strip()])
+
+        # Formata palavras-chave
+        palavras_formatadas = "Nenhuma palavra-chave especifica fornecida. Use seu conhecimento de SEO."
+        if palavras_chave and palavras_chave.strip():
+            # Aceita separacao por virgula ou quebra de linha
+            keywords = [kw.strip() for kw in palavras_chave.replace('\n', ',').split(',') if kw.strip()]
+            if keywords:
+                palavras_formatadas = "\n".join([f"- {kw}" for kw in keywords])
+
+        # Formata prompts
         system_prompt, user_prompt = formatar_prompt_seo(
             conteudo=conteudo,
             titulo=titulo_final,
             url=url_artigo,
-            guia_seo=guia_seo
+            guia_seo=guia_seo,
+            palavras_chave=palavras_formatadas
         )
 
         # Chama LLM
@@ -2361,6 +2393,8 @@ async def revisao_agente_seo_form(
         return {
             "tipo": "SEO",
             "total_sugestoes": len(revisoes),
+            "palavras_chave_usadas": palavras_chave.strip() if palavras_chave else None,
+            "guia_seo_fornecido": bool(guia_seo_file and guia_seo_file.filename),
             "revisoes": revisoes
         }
 
@@ -2368,6 +2402,8 @@ async def revisao_agente_seo_form(
         raise HTTPException(500, f"Erro no agente SEO: {str(e)}")
     finally:
         os.unlink(tmp_path)
+        if guia_path and os.path.exists(guia_path):
+            os.unlink(guia_path)
 
 
 @app.post("/revisao/agente-tecnico-form")

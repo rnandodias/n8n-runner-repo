@@ -65,6 +65,12 @@ SEO_USER_PROMPT_TEMPLATE = """## GUIA DE SEO DA EMPRESA
 
 ---
 
+## PALAVRAS-CHAVE PRIORITARIAS (Google Search Console / Keyword Research)
+
+{palavras_chave}
+
+---
+
 ## ARTIGO PARA REVISAO
 
 **Titulo:** {titulo}
@@ -79,7 +85,14 @@ SEO_USER_PROMPT_TEMPLATE = """## GUIA DE SEO DA EMPRESA
 ## TAREFA
 
 Analise o artigo acima seguindo o guia de SEO fornecido.
-Identifique problemas de SEO e sugira correcoes especificas.
+
+### Prioridades:
+1. Identifique problemas de SEO e sugira correcoes especificas
+2. **IMPORTANTE**: Incorpore as palavras-chave prioritarias listadas acima de forma natural no texto
+   - Verifique se as palavras-chave ja estao presentes
+   - Sugira onde e como incluir as que estao faltando
+   - Priorize inclusao em: titulos, subtitulos, primeiro paragrafo, meta descricao implicita
+   - NAO force palavras-chave de forma artificial - a leitura deve permanecer fluida
 
 {formato_saida}
 
@@ -198,11 +211,13 @@ def formatar_prompt_seo(
     conteudo: str,
     titulo: str = "",
     url: str = "",
-    guia_seo: str = "Use boas praticas gerais de SEO para conteudo tecnico."
+    guia_seo: str = "Use boas praticas gerais de SEO para conteudo tecnico.",
+    palavras_chave: str = "Nenhuma palavra-chave especifica fornecida. Use seu conhecimento de SEO."
 ) -> tuple:
     """Retorna (system_prompt, user_prompt) para revisao SEO."""
     user_prompt = SEO_USER_PROMPT_TEMPLATE.format(
         guia_seo=guia_seo,
+        palavras_chave=palavras_chave,
         titulo=titulo,
         url=url,
         conteudo=conteudo,
