@@ -2,17 +2,18 @@
 Modulo para aplicar Track Changes em documentos DOCX.
 Usa manipulacao OOXML direta para criar revisoes rastreaveis.
 
-Melhorias sobre versao anterior:
-- Busca de texto no nivel de paragrafo (suporta texto dividido em multiplos runs)
-- Normalizacao de texto para matching flexivel (smart quotes, bullets, whitespace)
-- Pre-processamento de revisoes conflitantes (mesmo texto_original)
-- Preservacao de formatacao (w:rPr) ao reconstruir runs
+Suporta:
+- Texto dividido em multiplos runs (w:r)
+- Texto dentro de hyperlinks (w:hyperlink)
+- Normalizacao para matching flexivel (bullets, smart quotes, whitespace)
+- Pre-processamento de revisoes conflitantes
+- Preservacao de formatacao (w:rPr) em insercoes e reconstrucoes
+- Preservacao de hyperlinks em trechos nao afetados
 """
 import os
 import re
 import shutil
 import tempfile
-import unicodedata
 import zipfile
 from copy import deepcopy
 from datetime import datetime
@@ -29,6 +30,7 @@ NAMESPACES = {
 
 W_NS = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
 XML_NS = '{http://www.w3.org/XML/1998/namespace}'
+R_NS = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}'
 REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships'
 
 # Caracteres de bullet/lista que LLMs incluem do texto renderizado
@@ -216,7 +218,7 @@ class TrackChangesApplicator:
         o mesmo texto_original, a primeira mantem sua acao e as demais
         sao convertidas em comentarios.
         """
-        vistos = {}  # texto_original normalizado -> indice da primeira ocorrencia
+        vistos = {}
         processadas = []
 
         for idx, rev in enumerate(revisoes):
@@ -228,7 +230,6 @@ class TrackChangesApplicator:
             chave = normalizar_texto(texto_orig)
 
             if chave in vistos:
-                # Converter duplicata em comentario
                 rev_copia = dict(rev)
                 acao_orig = rev.get('acao', 'substituir')
                 texto_novo = rev.get('texto_novo', '')
@@ -249,62 +250,76 @@ class TrackChangesApplicator:
         return processadas
 
     # =========================================================================
-    # BUSCA DE TEXTO (nivel de paragrafo, multi-run)
+    # BUSCA DE TEXTO (nivel de paragrafo, multi-run, com hyperlinks)
     # =========================================================================
 
-    def _obter_runs_paragrafo(self, paragraph):
+    def _obter_segmentos_paragrafo(self, paragraph):
         """
-        Obtem todos os runs de texto de um paragrafo com suas posicoes.
-        Considera apenas w:r diretos (nao dentro de w:del, w:ins, etc).
+        Obtem todos os segmentos de texto de um paragrafo com suas posicoes.
+        Inclui texto de w:r diretos E de w:hyperlink.
+        Cada segmento e um dict com: element, text, start, end, rPr, type.
         """
-        runs = []
+        segments = []
         current_pos = 0
 
         for child in paragraph:
-            # Apenas runs diretos do paragrafo
-            if child.tag != f'{W_NS}r':
-                continue
+            if child.tag == f'{W_NS}r':
+                run_text = ''
+                for t in child.findall(f'{W_NS}t'):
+                    run_text += (t.text or '')
+                if run_text:
+                    segments.append({
+                        'element': child,
+                        'text': run_text,
+                        'start': current_pos,
+                        'end': current_pos + len(run_text),
+                        'rPr': child.find(f'{W_NS}rPr'),
+                        'type': 'run',
+                    })
+                    current_pos += len(run_text)
 
-            # Concatena texto de todos os w:t dentro do run
-            run_text = ''
-            for t in child.findall(f'{W_NS}t'):
-                run_text += (t.text or '')
+            elif child.tag == f'{W_NS}hyperlink':
+                hl_text = ''
+                hl_rPr = None
+                for r in child.findall(f'{W_NS}r'):
+                    for t in r.findall(f'{W_NS}t'):
+                        hl_text += (t.text or '')
+                    if hl_rPr is None:
+                        hl_rPr = r.find(f'{W_NS}rPr')
+                if hl_text:
+                    segments.append({
+                        'element': child,
+                        'text': hl_text,
+                        'start': current_pos,
+                        'end': current_pos + len(hl_text),
+                        'rPr': hl_rPr,
+                        'type': 'hyperlink',
+                    })
+                    current_pos += len(hl_text)
 
-            if run_text:
-                runs.append({
-                    'element': child,
-                    'text': run_text,
-                    'start': current_pos,
-                    'end': current_pos + len(run_text),
-                    'rPr': child.find(f'{W_NS}rPr')
-                })
-                current_pos += len(run_text)
-
-        return runs
+        return segments
 
     def _encontrar_texto(self, texto_busca: str):
         """
-        Encontra texto_busca no documento, buscando no nivel de paragrafo
-        e suportando texto dividido em multiplos runs.
+        Encontra texto_busca no documento, buscando no nivel de paragrafo.
+        Suporta texto dividido em multiplos runs e dentro de hyperlinks.
 
         Estrategias de busca (em ordem):
         1. Match exato no texto concatenado do paragrafo
         2. Match normalizado (smart quotes, whitespace, etc)
         3. Match com bullets removidos
         4. Match normalizado + sem bullets
-
-        Retorna dict com informacoes do match ou None.
         """
         texto_norm = normalizar_texto(texto_busca)
         texto_sem_bullet = strip_bullets(texto_busca)
         texto_sem_bullet_norm = normalizar_texto(texto_sem_bullet)
 
         for paragraph in self.doc_root.iter(f'{W_NS}p'):
-            runs = self._obter_runs_paragrafo(paragraph)
-            if not runs:
+            segments = self._obter_segmentos_paragrafo(paragraph)
+            if not segments:
                 continue
 
-            full_text = ''.join(r['text'] for r in runs)
+            full_text = ''.join(s['text'] for s in segments)
             if not full_text.strip():
                 continue
 
@@ -312,7 +327,7 @@ class TrackChangesApplicator:
             idx = full_text.find(texto_busca)
             if idx >= 0:
                 return self._montar_resultado_match(
-                    paragraph, runs, full_text, idx, idx + len(texto_busca)
+                    paragraph, segments, full_text, idx, idx + len(texto_busca)
                 )
 
             # Estrategia 2: match normalizado
@@ -320,11 +335,11 @@ class TrackChangesApplicator:
             idx_norm = full_norm.find(texto_norm)
             if idx_norm >= 0:
                 orig_start, orig_end = self._mapear_posicao(
-                    full_mapa, idx_norm, len(texto_norm), full_text
+                    full_mapa, idx_norm, len(texto_norm)
                 )
                 if orig_start is not None:
                     return self._montar_resultado_match(
-                        paragraph, runs, full_text, orig_start, orig_end
+                        paragraph, segments, full_text, orig_start, orig_end
                     )
 
             # Estrategia 3: sem bullets (match exato)
@@ -332,7 +347,7 @@ class TrackChangesApplicator:
                 idx = full_text.find(texto_sem_bullet)
                 if idx >= 0:
                     return self._montar_resultado_match(
-                        paragraph, runs, full_text, idx, idx + len(texto_sem_bullet)
+                        paragraph, segments, full_text, idx, idx + len(texto_sem_bullet)
                     )
 
             # Estrategia 4: sem bullets + normalizado
@@ -340,52 +355,48 @@ class TrackChangesApplicator:
                 idx_norm = full_norm.find(texto_sem_bullet_norm)
                 if idx_norm >= 0:
                     orig_start, orig_end = self._mapear_posicao(
-                        full_mapa, idx_norm, len(texto_sem_bullet_norm), full_text
+                        full_mapa, idx_norm, len(texto_sem_bullet_norm)
                     )
                     if orig_start is not None:
                         return self._montar_resultado_match(
-                            paragraph, runs, full_text, orig_start, orig_end
+                            paragraph, segments, full_text, orig_start, orig_end
                         )
 
         return None
 
-    def _mapear_posicao(self, mapa, norm_start, norm_len, texto_original):
-        """
-        Mapeia posicao no texto normalizado de volta para o texto original.
-        """
+    def _mapear_posicao(self, mapa, norm_start, norm_len):
+        """Mapeia posicao no texto normalizado de volta para o texto original."""
         if not mapa:
             return None, None
         if norm_start + norm_len > len(mapa):
             return None, None
 
         orig_start = mapa[norm_start]
-        last_norm_idx = norm_start + norm_len - 1
-        orig_last = mapa[last_norm_idx]
-        # Fim exclusivo: caracter apos o ultimo mapeado
+        orig_last = mapa[norm_start + norm_len - 1]
         orig_end = orig_last + 1
 
         return orig_start, orig_end
 
-    def _montar_resultado_match(self, paragraph, runs, full_text, match_start, match_end):
-        """Monta o dict de resultado com runs afetados."""
+    def _montar_resultado_match(self, paragraph, segments, full_text, match_start, match_end):
+        """Monta o dict de resultado com segmentos afetados."""
         affected = []
-        for r in runs:
-            # Verifica sobreposicao com o match
-            if r['end'] <= match_start or r['start'] >= match_end:
+        for s in segments:
+            if s['end'] <= match_start or s['start'] >= match_end:
                 continue
 
-            clip_start = max(match_start - r['start'], 0)
-            clip_end = min(match_end - r['start'], len(r['text']))
+            clip_start = max(match_start - s['start'], 0)
+            clip_end = min(match_end - s['start'], len(s['text']))
 
             affected.append({
-                'element': r['element'],
-                'text': r['text'],
-                'rPr': r.get('rPr'),
+                'element': s['element'],
+                'text': s['text'],
+                'rPr': s.get('rPr'),
+                'type': s.get('type', 'run'),
                 'clip_start': clip_start,
                 'clip_end': clip_end,
-                'before_text': r['text'][:clip_start],
-                'after_text': r['text'][clip_end:],
-                'matched_text': r['text'][clip_start:clip_end],
+                'before_text': s['text'][:clip_start],
+                'after_text': s['text'][clip_end:],
+                'matched_text': s['text'][clip_start:clip_end],
             })
 
         if not affected:
@@ -395,20 +406,20 @@ class TrackChangesApplicator:
             'paragraph': paragraph,
             'match_start': match_start,
             'match_end': match_end,
-            'runs': runs,
+            'segments': segments,
             'full_text': full_text,
             'matched_original': full_text[match_start:match_end],
-            'affected_runs': affected,
+            'affected': affected,
         }
 
     # =========================================================================
-    # BUSCA DE TEXTO PARA COMENTARIOS (inclui w:ins)
+    # BUSCA DE TEXTO PARA COMENTARIOS (inclui w:ins e w:hyperlink)
     # =========================================================================
 
     def _encontrar_texto_para_comentario(self, texto_busca: str):
         """
-        Busca texto incluindo dentro de elementos w:ins (texto ja inserido
-        por track changes). Usado para marcar comentarios.
+        Busca texto incluindo dentro de w:ins e w:hyperlink.
+        Usado para marcar comentarios.
         """
         texto_norm = normalizar_texto(texto_busca)
 
@@ -421,10 +432,8 @@ class TrackChangesApplicator:
                     run_text = ''.join(t.text or '' for t in child.findall(f'{W_NS}t'))
                     if run_text:
                         elements_info.append({
-                            'element': child,
-                            'text': run_text,
-                            'start': current_pos,
-                            'end': current_pos + len(run_text),
+                            'element': child, 'text': run_text,
+                            'start': current_pos, 'end': current_pos + len(run_text),
                         })
                         current_pos += len(run_text)
                 elif child.tag == f'{W_NS}ins':
@@ -432,10 +441,17 @@ class TrackChangesApplicator:
                         run_text = ''.join(t.text or '' for t in r.findall(f'{W_NS}t'))
                         if run_text:
                             elements_info.append({
-                                'element': child,
-                                'text': run_text,
-                                'start': current_pos,
-                                'end': current_pos + len(run_text),
+                                'element': child, 'text': run_text,
+                                'start': current_pos, 'end': current_pos + len(run_text),
+                            })
+                            current_pos += len(run_text)
+                elif child.tag == f'{W_NS}hyperlink':
+                    for r in child.findall(f'{W_NS}r'):
+                        run_text = ''.join(t.text or '' for t in r.findall(f'{W_NS}t'))
+                        if run_text:
+                            elements_info.append({
+                                'element': child, 'text': run_text,
+                                'start': current_pos, 'end': current_pos + len(run_text),
                             })
                             current_pos += len(run_text)
 
@@ -447,7 +463,6 @@ class TrackChangesApplicator:
             # Match exato
             idx = full_text.find(texto_busca)
             if idx >= 0:
-                # Encontrar o elemento que contem o inicio do match
                 for ei in elements_info:
                     if ei['start'] <= idx < ei['end']:
                         return paragraph, ei['element']
@@ -456,7 +471,6 @@ class TrackChangesApplicator:
             # Match normalizado
             full_norm = normalizar_texto(full_text)
             if texto_norm in full_norm:
-                # Retorna o primeiro elemento do paragrafo como referencia
                 return paragraph, elements_info[0]['element']
 
         return None, None
@@ -475,8 +489,7 @@ class TrackChangesApplicator:
 
         if not texto_original and acao != "inserir":
             self.resultados.append({
-                "idx": idx,
-                "ok": False,
+                "idx": idx, "ok": False,
                 "erro": "texto_original e obrigatorio para esta acao"
             })
             return
@@ -488,8 +501,7 @@ class TrackChangesApplicator:
                 self.resultados.append({"idx": idx, "ok": True, "acao": "substituir"})
             else:
                 self.resultados.append({
-                    "idx": idx,
-                    "ok": False,
+                    "idx": idx, "ok": False,
                     "erro": f"Texto nao encontrado: '{texto_original[:80]}...'"
                 })
 
@@ -500,8 +512,7 @@ class TrackChangesApplicator:
                 self.resultados.append({"idx": idx, "ok": True, "acao": "deletar"})
             else:
                 self.resultados.append({
-                    "idx": idx,
-                    "ok": False,
+                    "idx": idx, "ok": False,
                     "erro": f"Texto nao encontrado para delecao: '{texto_original[:80]}...'"
                 })
 
@@ -512,8 +523,7 @@ class TrackChangesApplicator:
                 self.resultados.append({"idx": idx, "ok": True, "acao": "inserir"})
             else:
                 self.resultados.append({
-                    "idx": idx,
-                    "ok": False,
+                    "idx": idx, "ok": False,
                     "erro": f"Nao foi possivel inserir apos: '{texto_original[:80]}...'"
                 })
 
@@ -523,54 +533,61 @@ class TrackChangesApplicator:
                 self.resultados.append({"idx": idx, "ok": True, "acao": "comentario"})
             else:
                 self.resultados.append({
-                    "idx": idx,
-                    "ok": False,
+                    "idx": idx, "ok": False,
                     "erro": f"Texto nao encontrado para comentario: '{texto_original[:80]}...'"
                 })
 
         else:
             self.resultados.append({
-                "idx": idx,
-                "ok": False,
+                "idx": idx, "ok": False,
                 "erro": f"Acao desconhecida: {acao}"
             })
 
     def _aplicar_substituicao(self, texto_antigo: str, texto_novo: str) -> bool:
-        """Aplica uma substituicao com Track Changes (multi-run)."""
+        """Aplica uma substituicao com Track Changes (multi-run, hyperlink-aware)."""
         match = self._encontrar_texto(texto_antigo)
         if not match:
             return False
 
         paragraph = match['paragraph']
-        affected = match['affected_runs']
-        matched_original = match['matched_original']
+        affected = match['affected']
 
         first_elem = affected[0]['element']
         first_idx = list(paragraph).index(first_elem)
 
         new_elements = []
 
-        # Texto antes do match no primeiro run afetado
+        # Texto antes do match no primeiro segmento afetado
         if affected[0]['before_text']:
             new_elements.append(
-                self._criar_run_com_props(affected[0]['before_text'], affected[0]['rPr'])
+                self._criar_segmento(
+                    affected[0]['before_text'],
+                    affected[0]['rPr'],
+                    affected[0]['type'],
+                    affected[0]['element']
+                )
             )
 
         # Delecao do texto original (preserva formatacao de cada run)
         del_elem = self._criar_delecao_multi(affected)
         new_elements.append(del_elem)
 
-        # Insercao do texto novo
-        ins_elem = self._criar_insercao(texto_novo)
+        # Insercao do texto novo COM formatacao do texto original
+        ins_elem = self._criar_insercao(texto_novo, affected[0].get('rPr'))
         new_elements.append(ins_elem)
 
-        # Texto apos o match no ultimo run afetado
+        # Texto apos o match no ultimo segmento afetado
         if affected[-1]['after_text']:
             new_elements.append(
-                self._criar_run_com_props(affected[-1]['after_text'], affected[-1]['rPr'])
+                self._criar_segmento(
+                    affected[-1]['after_text'],
+                    affected[-1]['rPr'],
+                    affected[-1]['type'],
+                    affected[-1]['element']
+                )
             )
 
-        # Remove runs afetados (deduplicados, mantendo ordem)
+        # Remove segmentos afetados (deduplicados, mantendo ordem)
         unique_elems = list(dict.fromkeys(ar['element'] for ar in affected))
         for elem in unique_elems:
             paragraph.remove(elem)
@@ -583,36 +600,42 @@ class TrackChangesApplicator:
         return True
 
     def _aplicar_delecao(self, texto: str) -> bool:
-        """Aplica uma delecao com Track Changes (multi-run)."""
+        """Aplica uma delecao com Track Changes (multi-run, hyperlink-aware)."""
         match = self._encontrar_texto(texto)
         if not match:
             return False
 
         paragraph = match['paragraph']
-        affected = match['affected_runs']
+        affected = match['affected']
 
         first_elem = affected[0]['element']
         first_idx = list(paragraph).index(first_elem)
 
         new_elements = []
 
-        # Texto antes do match
         if affected[0]['before_text']:
             new_elements.append(
-                self._criar_run_com_props(affected[0]['before_text'], affected[0]['rPr'])
+                self._criar_segmento(
+                    affected[0]['before_text'],
+                    affected[0]['rPr'],
+                    affected[0]['type'],
+                    affected[0]['element']
+                )
             )
 
-        # Delecao
         del_elem = self._criar_delecao_multi(affected)
         new_elements.append(del_elem)
 
-        # Texto apos o match
         if affected[-1]['after_text']:
             new_elements.append(
-                self._criar_run_com_props(affected[-1]['after_text'], affected[-1]['rPr'])
+                self._criar_segmento(
+                    affected[-1]['after_text'],
+                    affected[-1]['rPr'],
+                    affected[-1]['type'],
+                    affected[-1]['element']
+                )
             )
 
-        # Remove e insere
         unique_elems = list(dict.fromkeys(ar['element'] for ar in affected))
         for elem in unique_elems:
             paragraph.remove(elem)
@@ -624,35 +647,39 @@ class TrackChangesApplicator:
         return True
 
     def _aplicar_insercao(self, contexto: str, texto_novo: str) -> bool:
-        """Insere texto apos o contexto especificado (multi-run)."""
+        """Insere texto apos o contexto especificado (multi-run, hyperlink-aware)."""
         match = self._encontrar_texto(contexto)
         if not match:
             return False
 
         paragraph = match['paragraph']
-        affected = match['affected_runs']
+        affected = match['affected']
 
-        # A insercao vai APOS o contexto, que termina no ultimo run afetado
         last_ar = affected[-1]
         last_elem = last_ar['element']
         last_idx = list(paragraph).index(last_elem)
 
-        ins_elem = self._criar_insercao(texto_novo)
+        # Usar rPr do contexto para manter formatacao consistente
+        ins_elem = self._criar_insercao(texto_novo, last_ar.get('rPr'))
 
         if not last_ar['after_text']:
-            # Contexto termina exatamente no final do run - inserir apos
+            # Contexto termina exatamente no final do segmento
             paragraph.insert(last_idx + 1, ins_elem)
         else:
-            # Contexto termina no meio do run - dividir o run
+            # Contexto termina no meio do segmento - dividir
             paragraph.remove(last_elem)
 
-            # Run com texto ate o fim do contexto
-            run_antes = self._criar_run_com_props(
-                last_ar['text'][:last_ar['clip_end']], last_ar['rPr']
+            run_antes = self._criar_segmento(
+                last_ar['text'][:last_ar['clip_end']],
+                last_ar['rPr'],
+                last_ar['type'],
+                last_ar['element']
             )
-            # Run com texto restante
-            run_depois = self._criar_run_com_props(
-                last_ar['after_text'], last_ar['rPr']
+            run_depois = self._criar_segmento(
+                last_ar['after_text'],
+                last_ar['rPr'],
+                last_ar['type'],
+                last_ar['element']
             )
 
             paragraph.insert(last_idx, run_antes)
@@ -674,6 +701,18 @@ class TrackChangesApplicator:
     # CRIACAO DE ELEMENTOS XML
     # =========================================================================
 
+    def _criar_segmento(self, texto: str, rPr=None, tipo: str = 'run',
+                        original_element=None) -> etree._Element:
+        """
+        Cria o elemento apropriado baseado no tipo do segmento.
+        Para 'run': cria w:r com texto e formatacao.
+        Para 'hyperlink': cria w:hyperlink preservando atributos do original.
+        """
+        if tipo == 'hyperlink' and original_element is not None:
+            return self._criar_hyperlink_com_texto(original_element, texto, rPr)
+        else:
+            return self._criar_run_com_props(texto, rPr)
+
     def _criar_run_com_props(self, texto: str, rPr=None) -> etree._Element:
         """Cria um w:r com texto, copiando formatacao do run original."""
         r = etree.Element(f'{W_NS}r')
@@ -684,36 +723,62 @@ class TrackChangesApplicator:
         t.set(f'{XML_NS}space', 'preserve')
         return r
 
-    def _criar_delecao_multi(self, affected_runs: list) -> etree._Element:
+    def _criar_hyperlink_com_texto(self, original_hyperlink, texto: str,
+                                    rPr=None) -> etree._Element:
+        """
+        Cria um w:hyperlink baseado no original mas com texto diferente.
+        Preserva todos os atributos (r:id, w:history, etc) e namespaces.
+        """
+        # Deep copy preserva atributos e namespaces
+        new_hl = deepcopy(original_hyperlink)
+        # Remove todos os filhos existentes
+        for child in list(new_hl):
+            new_hl.remove(child)
+        # Adiciona novo run com o texto especificado
+        r = etree.SubElement(new_hl, f'{W_NS}r')
+        if rPr is not None:
+            r.append(deepcopy(rPr))
+        t = etree.SubElement(r, f'{W_NS}t')
+        t.text = texto
+        t.set(f'{XML_NS}space', 'preserve')
+        return new_hl
+
+    def _criar_delecao_multi(self, affected_segments: list) -> etree._Element:
         """
         Cria elemento w:del com multiplos runs, preservando a formatacao
-        original de cada run.
+        original de cada segmento (run ou hyperlink).
         """
         del_elem = etree.Element(f'{W_NS}del')
         del_elem.set(f'{W_NS}id', str(self.revision_id))
         del_elem.set(f'{W_NS}author', self.autor)
         del_elem.set(f'{W_NS}date', datetime.now().isoformat())
 
-        for ar in affected_runs:
-            matched_text = ar['matched_text']
+        for seg in affected_segments:
+            matched_text = seg['matched_text']
             if matched_text:
                 del_r = etree.SubElement(del_elem, f'{W_NS}r')
-                if ar.get('rPr') is not None:
-                    del_r.append(deepcopy(ar['rPr']))
+                if seg.get('rPr') is not None:
+                    del_r.append(deepcopy(seg['rPr']))
                 del_text = etree.SubElement(del_r, f'{W_NS}delText')
                 del_text.text = matched_text
                 del_text.set(f'{XML_NS}space', 'preserve')
 
         return del_elem
 
-    def _criar_insercao(self, texto: str) -> etree._Element:
-        """Cria um elemento w:ins para insercao rastreada."""
+    def _criar_insercao(self, texto: str, rPr=None) -> etree._Element:
+        """
+        Cria um elemento w:ins para insercao rastreada.
+        Opcionalmente copia formatacao (rPr) para manter estilo do texto original
+        (ex: titulos, negrito, etc).
+        """
         ins_elem = etree.Element(f'{W_NS}ins')
         ins_elem.set(f'{W_NS}id', str(self.revision_id + 1000))
         ins_elem.set(f'{W_NS}author', self.autor)
         ins_elem.set(f'{W_NS}date', datetime.now().isoformat())
 
         ins_r = etree.SubElement(ins_elem, f'{W_NS}r')
+        if rPr is not None:
+            ins_r.append(deepcopy(rPr))
         ins_text = etree.SubElement(ins_r, f'{W_NS}t')
         ins_text.text = texto
         ins_text.set(f'{XML_NS}space', 'preserve')
@@ -761,7 +826,7 @@ class TrackChangesApplicator:
     def _marcar_texto_comentario(self, comment: dict):
         """
         Marca um trecho de texto com referencia ao comentario.
-        Busca inclusive dentro de elementos w:ins (texto inserido por track changes).
+        Busca inclusive dentro de w:ins e w:hyperlink.
         """
         texto_busca = comment['texto']
         comment_id = comment['id']
@@ -776,7 +841,6 @@ class TrackChangesApplicator:
         start.set(f'{W_NS}id', str(comment_id))
         paragraph.insert(idx, start)
 
-        # idx+2 porque inserimos start antes do elemento (idx+1 e o elemento)
         end = etree.Element(f'{W_NS}commentRangeEnd')
         end.set(f'{W_NS}id', str(comment_id))
         paragraph.insert(idx + 2, end)
