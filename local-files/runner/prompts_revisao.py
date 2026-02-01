@@ -79,6 +79,8 @@ Seu objetivo e melhorar a performance organica e conversao, garantindo que o art
 - NAO altere informacoes tecnicas precisas
 - NAO altere o estilo pessoal do autor
 - Sugira apenas mudancas que realmente impactem SEO/GEO
+- Quando fornecido, siga o GUIA DE SEO DA EMPRESA como referencia principal para padroes e diretrizes
+- Quando fornecidas, priorize a incorporacao das PALAVRAS-CHAVE PESQUISADAS nos pontos estrategicos (H1, H2, primeiros paragrafos)
 """
 
 SEO_USER_PROMPT_TEMPLATE = """## GUIA DE SEO DA EMPRESA

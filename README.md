@@ -8,7 +8,7 @@ git push
 
 OU
 
-git add -A && git commit -m "Incluindo possibilidade de passas palavra-chave e gui SEO" && git push
+git add -A && git commit -m "Atualização no system prompt do agente de SEO" && git push
 
 ---
 
