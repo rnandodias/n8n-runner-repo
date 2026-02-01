@@ -8,7 +8,7 @@ git push
 
 OU
 
-git add -A && git commit -m "Atualização no system prompt do agente de SEO" && git push
+git add -A && git commit -m "Solução de problemas no track_changes 1) Revisões conflitantes, 2) Bullets e caracteres especiais, 3) Texto dividido em múltiplos runs, 4) Formatação perdida e 5) Comentários não encontrados após track changes" && git push
 
 ---
 
