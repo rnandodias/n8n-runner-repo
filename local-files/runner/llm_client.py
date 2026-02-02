@@ -19,12 +19,28 @@ class LLMClient(ABC):
     def extrair_json(self, resposta: str) -> list:
         """Extrai array JSON da resposta do modelo."""
         try:
+            resposta = resposta.strip()
+
+            # Remove markdown code fences (```json ... ``` ou ``` ... ```)
+            if resposta.startswith('```'):
+                resposta = re.sub(r'^```\w*\s*\n?', '', resposta)
+                resposta = re.sub(r'\n?```\s*$', '', resposta)
+                resposta = resposta.strip()
+
+            # Tenta parse direto primeiro
+            try:
+                result = json.loads(resposta)
+                if isinstance(result, list):
+                    return result
+            except json.JSONDecodeError:
+                pass
+
             # Tenta encontrar array JSON na resposta
             json_match = re.search(r'\[[\s\S]*\]', resposta)
             if json_match:
                 return json.loads(json_match.group())
-            else:
-                return json.loads(resposta)
+
+            return []
         except json.JSONDecodeError as e:
             print(f"Erro ao parsear JSON: {e}")
             print(f"Resposta: {resposta[:500]}...")

@@ -572,9 +572,11 @@ class TrackChangesApplicator:
         del_elem = self._criar_delecao_multi(affected)
         new_elements.append(del_elem)
 
-        # Insercao do texto novo COM formatacao do texto original
-        ins_elem = self._criar_insercao(texto_novo, affected[0].get('rPr'))
-        new_elements.append(ins_elem)
+        # Insercao do texto novo, preservando hyperlinks quando possivel
+        ins_elements = self._criar_insercao_com_hyperlinks(
+            texto_novo, affected, affected[0].get('rPr')
+        )
+        new_elements.extend(ins_elements)
 
         # Texto apos o match no ultimo segmento afetado
         if affected[-1]['after_text']:
@@ -784,6 +786,91 @@ class TrackChangesApplicator:
         ins_text.set(f'{XML_NS}space', 'preserve')
 
         return ins_elem
+
+    def _criar_insercao_com_hyperlinks(self, texto_novo: str, affected: list,
+                                        rPr=None) -> list:
+        """
+        Cria elementos de insercao preservando hyperlinks dos segmentos afetados.
+        Se o texto do hyperlink original ainda aparece no texto_novo, o hyperlink
+        e mantido (usando w:hyperlink > w:ins > w:r, que e OOXML valido).
+        Caso contrario, cria insercao simples.
+
+        Retorna lista de elementos (w:ins e/ou w:hyperlink).
+        """
+        # Coleta hyperlinks dos segmentos afetados
+        hyperlinks = []
+        for seg in affected:
+            if seg['type'] == 'hyperlink' and seg['matched_text']:
+                hyperlinks.append({
+                    'text': seg['matched_text'],
+                    'element': seg['element'],
+                    'rPr': seg.get('rPr'),
+                })
+
+        if not hyperlinks:
+            # Sem hyperlinks para preservar - insercao simples
+            return [self._criar_insercao(texto_novo, rPr)]
+
+        # Tenta encontrar o texto de cada hyperlink no texto novo
+        elements = []
+        remaining = texto_novo
+
+        for hl in hyperlinks:
+            hl_text = hl['text']
+            idx = remaining.find(hl_text)
+            if idx < 0:
+                # Hyperlink nao encontrado no texto novo - sera perdido
+                continue
+
+            # Texto antes do hyperlink
+            before = remaining[:idx]
+            if before:
+                elements.append(self._criar_insercao(before, rPr))
+
+            # Hyperlink preservado com w:ins dentro
+            hl_elem = self._criar_hyperlink_com_insercao(
+                hl['element'], hl_text, hl['rPr']
+            )
+            elements.append(hl_elem)
+
+            remaining = remaining[idx + len(hl_text):]
+
+        # Texto restante apos ultimo hyperlink
+        if remaining:
+            elements.append(self._criar_insercao(remaining, rPr))
+
+        if not elements:
+            # Nenhum hyperlink preservado - fallback para insercao simples
+            return [self._criar_insercao(texto_novo, rPr)]
+
+        return elements
+
+    def _criar_hyperlink_com_insercao(self, original_hyperlink, texto: str,
+                                       rPr=None) -> etree._Element:
+        """
+        Cria w:hyperlink contendo w:ins (track change dentro do hyperlink).
+        Preserva atributos do hyperlink original (r:id, URL, etc).
+        Estrutura: w:hyperlink > w:ins > w:r > w:t
+        """
+        new_hl = deepcopy(original_hyperlink)
+        # Remove filhos existentes
+        for child in list(new_hl):
+            new_hl.remove(child)
+
+        # Cria w:ins dentro do hyperlink
+        ins_elem = etree.SubElement(new_hl, f'{W_NS}ins')
+        ins_elem.set(f'{W_NS}id', str(self.revision_id + 1000))
+        ins_elem.set(f'{W_NS}author', self.autor)
+        ins_elem.set(f'{W_NS}date', datetime.now().isoformat())
+
+        ins_r = etree.SubElement(ins_elem, f'{W_NS}r')
+        if rPr is not None:
+            ins_r.append(deepcopy(rPr))
+        ins_text = etree.SubElement(ins_r, f'{W_NS}t')
+        ins_text.text = texto
+        ins_text.set(f'{XML_NS}space', 'preserve')
+
+        return new_hl
 
     # =========================================================================
     # COMENTARIOS
