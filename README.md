@@ -8,7 +8,7 @@ git push
 
 OU
 
-git add -A && git commit -m "Ajuste para resolver problema com o provider Anthropic" && git push
+git add -A && git commit -m "Ajuste na função extrair_json" && git push
 
 ---
 

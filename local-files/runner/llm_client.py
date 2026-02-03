@@ -17,34 +17,67 @@ class LLMClient(ABC):
         pass
 
     def extrair_json(self, resposta: str) -> list:
-        """Extrai array JSON da resposta do modelo."""
-        try:
+        """
+        Extrai array JSON da resposta do modelo.
+        Resiliente a: markdown fences, JSON truncado, erros parciais.
+        Recupera o maximo de objetos possiveis mesmo com erros.
+        """
+        resposta = resposta.strip()
+
+        # Remove markdown code fences (```json ... ``` ou ``` ... ```)
+        if resposta.startswith('```'):
+            resposta = re.sub(r'^```\w*\s*\n?', '', resposta)
+            resposta = re.sub(r'\n?```\s*$', '', resposta)
             resposta = resposta.strip()
 
-            # Remove markdown code fences (```json ... ``` ou ``` ... ```)
-            if resposta.startswith('```'):
-                resposta = re.sub(r'^```\w*\s*\n?', '', resposta)
-                resposta = re.sub(r'\n?```\s*$', '', resposta)
-                resposta = resposta.strip()
+        # Extrai o conteudo do array JSON
+        json_text = resposta
+        json_match = re.search(r'\[[\s\S]*\]', resposta)
+        if json_match:
+            json_text = json_match.group()
 
-            # Tenta parse direto primeiro
-            try:
-                result = json.loads(resposta)
-                if isinstance(result, list):
+        # Tentativa 1: parse direto
+        try:
+            result = json.loads(json_text)
+            if isinstance(result, list):
+                return result
+        except json.JSONDecodeError:
+            pass
+
+        # Tentativa 2: truncar no ultimo objeto completo e fechar array
+        # (recupera tudo antes do ponto com erro)
+        try:
+            last_brace = json_text.rfind('}')
+            if last_brace > 0:
+                truncated = json_text[:last_brace + 1]
+                if not truncated.lstrip().startswith('['):
+                    truncated = '[' + truncated
+                truncated = truncated.rstrip().rstrip(',') + ']'
+                result = json.loads(truncated)
+                if isinstance(result, list) and result:
+                    print(f"JSON reparado (truncado): {len(result)} revisoes recuperadas")
                     return result
+        except json.JSONDecodeError:
+            pass
+
+        # Tentativa 3: extrair objetos individuais com regex
+        # (recupera cada objeto valido, ignora os malformados)
+        objects = []
+        # Busca blocos {...} que contenham campos de revisao
+        for m in re.finditer(r'\{[^{}]*"acao"\s*:[^{}]*\}', json_text):
+            try:
+                obj = json.loads(m.group())
+                objects.append(obj)
             except json.JSONDecodeError:
-                pass
+                continue
 
-            # Tenta encontrar array JSON na resposta
-            json_match = re.search(r'\[[\s\S]*\]', resposta)
-            if json_match:
-                return json.loads(json_match.group())
+        if objects:
+            print(f"JSON reparado (individual): {len(objects)} revisoes recuperadas")
+            return objects
 
-            return []
-        except json.JSONDecodeError as e:
-            print(f"Erro ao parsear JSON: {e}")
-            print(f"Resposta: {resposta[:500]}...")
-            return []
+        print(f"Erro ao parsear JSON: nenhuma revisao recuperada")
+        print(f"Resposta: {resposta[:500]}...")
+        return []
 
 
 class AnthropicClient(LLMClient):
