@@ -8,7 +8,7 @@ git push
 
 OU
 
-git add -A && git commit -m "Solução de problemas no track_changes 1) Hiperlinks não preservados" && git push
+git add -A && git commit -m "Modificações nos modelos de IA usados na OpenAI e Antropic" && git push
 
 ---
 

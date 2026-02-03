@@ -12,7 +12,7 @@ class LLMClient(ABC):
     """Interface base para clientes de LLM."""
 
     @abstractmethod
-    def gerar_resposta(self, system_prompt: str, user_prompt: str, max_tokens: int = 8000) -> str:
+    def gerar_resposta(self, system_prompt: str, user_prompt: str, max_tokens: int = 32000) -> str:
         """Gera uma resposta do modelo."""
         pass
 
@@ -53,9 +53,9 @@ class AnthropicClient(LLMClient):
     def __init__(self, model: str = None):
         import anthropic
         self.client = anthropic.Anthropic()
-        self.model = model or os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
+        self.model = model or os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
 
-    def gerar_resposta(self, system_prompt: str, user_prompt: str, max_tokens: int = 8000) -> str:
+    def gerar_resposta(self, system_prompt: str, user_prompt: str, max_tokens: int = 32000) -> str:
         response = self.client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
@@ -71,12 +71,12 @@ class OpenAIClient(LLMClient):
     def __init__(self, model: str = None):
         from openai import OpenAI
         self.client = OpenAI()
-        self.model = model or os.getenv("OPENAI_MODEL", "gpt-4o")
+        self.model = model or os.getenv("OPENAI_MODEL", "gpt-4.1")
 
-    def gerar_resposta(self, system_prompt: str, user_prompt: str, max_tokens: int = 8000) -> str:
+    def gerar_resposta(self, system_prompt: str, user_prompt: str, max_tokens: int = 32000) -> str:
         response = self.client.chat.completions.create(
             model=self.model,
-            max_tokens=max_tokens,
+            max_completion_tokens=max_tokens,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
