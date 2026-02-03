@@ -8,7 +8,7 @@ git push
 
 OU
 
-git add -A && git commit -m "Modificações nos modelos de IA usados na OpenAI e Antropic" && git push
+git add -A && git commit -m "Ajuste para resolver problema com o provider Anthropic" && git push
 
 ---
 

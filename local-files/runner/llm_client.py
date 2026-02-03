@@ -56,13 +56,13 @@ class AnthropicClient(LLMClient):
         self.model = model or os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
 
     def gerar_resposta(self, system_prompt: str, user_prompt: str, max_tokens: int = 32000) -> str:
-        response = self.client.messages.create(
+        with self.client.messages.stream(
             model=self.model,
             max_tokens=max_tokens,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}]
-        )
-        return response.content[0].text
+        ) as stream:
+            return stream.get_final_text()
 
 
 class OpenAIClient(LLMClient):
