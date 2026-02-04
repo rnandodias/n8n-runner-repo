@@ -50,7 +50,7 @@ except ImportError:
     print("python3-uno nao disponivel - endpoints LibreOffice desabilitados")
 
 # Track Changes OOXML
-from track_changes import aplicar_revisoes_docx, TrackChangesApplicator
+from track_changes import aplicar_revisoes_docx, aplicar_comentarios_docx, TrackChangesApplicator
 
 # LLM e Prompts para agentes de revisao
 from llm_client import criar_cliente_llm
@@ -2549,6 +2549,65 @@ async def revisao_aplicar_form(
         raise HTTPException(400, f"JSON de revisoes invalido: {str(e)}")
     except Exception as e:
         raise HTTPException(500, f"Erro ao aplicar revisoes: {str(e)}")
+    finally:
+        if os.path.exists(input_path):
+            os.unlink(input_path)
+
+
+@app.post("/revisao/aplicar-comentarios-form")
+async def revisao_aplicar_comentarios_form(
+    file: UploadFile = File(...),
+    revisoes: str = Form(...),
+    autor: str = Form("Agente IA Revisor")
+):
+    """
+    Aplica SOMENTE comentarios a um documento DOCX via upload de arquivo.
+    Nao altera o texto do documento - apenas adiciona comentarios nos trechos encontrados.
+    Suporta multiplos comentarios no mesmo trecho (ranges sobrepostos).
+
+    - file: Arquivo DOCX
+    - revisoes: JSON string com lista de revisoes
+    - autor: Nome do autor dos comentarios
+    """
+    import json as json_lib
+
+    docx_bytes = await file.read()
+    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+        tmp.write(docx_bytes)
+        tmp.flush()
+        input_path = tmp.name
+
+    output_path = input_path.replace(".docx", "_comentado.docx")
+
+    try:
+        revisoes_list = json_lib.loads(revisoes)
+
+        resultado = aplicar_comentarios_docx(
+            input_path,
+            output_path,
+            revisoes_list,
+            autor
+        )
+
+        stats = resultado.get('estatisticas', {})
+
+        return FileResponse(
+            output_path,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            filename="documento_comentado.docx",
+            headers={
+                "X-Total-Comentarios": str(resultado.get('total_comentarios', 0)),
+                "X-Match-Exato": str(stats.get('exato', 0)),
+                "X-Match-Normalizado": str(stats.get('normalizado', 0)),
+                "X-Match-Fuzzy": str(stats.get('fuzzy', 0)),
+                "X-Match-Paragrafo": str(stats.get('paragrafo', 0)),
+                "X-Match-Falhas": str(stats.get('falha', 0)),
+            }
+        )
+    except json_lib.JSONDecodeError as e:
+        raise HTTPException(400, f"JSON de revisoes invalido: {str(e)}")
+    except Exception as e:
+        raise HTTPException(500, f"Erro ao aplicar comentarios: {str(e)}")
     finally:
         if os.path.exists(input_path):
             os.unlink(input_path)

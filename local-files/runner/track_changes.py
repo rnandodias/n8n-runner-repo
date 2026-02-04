@@ -1002,7 +1002,447 @@ class TrackChangesApplicator:
 
 
 # =============================================================================
-# FUNCAO DE CONVENIENCIA
+# CLASSE DE COMENTARIOS (independente do TrackChangesApplicator)
+# =============================================================================
+
+class CommentApplicator:
+    """Aplica SOMENTE comentarios a um DOCX. Nao-destrutivo (nao altera texto)."""
+
+    def __init__(self, input_path: str, output_path: str):
+        self.input_path = Path(input_path)
+        self.output_path = Path(output_path)
+
+        if not self.input_path.exists():
+            raise FileNotFoundError(f"Arquivo nao encontrado: {input_path}")
+
+        self.temp_dir = None
+        self.doc_root = None
+        self.comments = []  # Lista de dicts para gerar comments.xml
+        self.next_comment_id = 0
+        self.estatisticas = {
+            'exato': 0,
+            'normalizado': 0,
+            'fuzzy': 0,
+            'paragrafo': 0,
+            'falha': 0,
+        }
+
+    # =========================================================================
+    # API PUBLICA
+    # =========================================================================
+
+    def aplicar_comentarios(self, revisoes: list, autor: str = "Agente IA Revisor") -> dict:
+        """
+        Aplica lista de revisoes como comentarios ao documento.
+
+        Args:
+            revisoes: Lista de dicts com as revisoes
+            autor: Nome do autor dos comentarios
+
+        Returns:
+            dict com estatisticas
+        """
+        self.autor = autor
+        self.comments = []
+        self.next_comment_id = 0
+        self.estatisticas = {
+            'exato': 0, 'normalizado': 0, 'fuzzy': 0, 'paragrafo': 0, 'falha': 0,
+        }
+
+        shutil.copy(self.input_path, self.output_path)
+
+        self.temp_dir = tempfile.mkdtemp()
+        with zipfile.ZipFile(self.output_path, 'r') as zip_ref:
+            zip_ref.extractall(self.temp_dir)
+
+        try:
+            doc_xml_path = os.path.join(self.temp_dir, 'word', 'document.xml')
+            tree = etree.parse(doc_xml_path)
+            self.doc_root = tree.getroot()
+
+            # Agrupa revisoes por texto_original normalizado
+            grupos = self._agrupar_por_texto(revisoes)
+
+            # Processa cada grupo
+            for texto_original, grupo_revs in grupos.items():
+                self._processar_grupo_comentarios(texto_original, grupo_revs)
+
+            # Gera comments.xml e atualiza rels
+            if self.comments:
+                self._adicionar_comments()
+
+            tree.write(doc_xml_path, xml_declaration=True, encoding='UTF-8', standalone=True)
+            self._recompactar_docx()
+
+        finally:
+            if self.temp_dir:
+                shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+        total = sum(self.estatisticas.values())
+        return {
+            'total_comentarios': total - self.estatisticas['falha'],
+            'estatisticas': dict(self.estatisticas),
+        }
+
+    # =========================================================================
+    # AGRUPAMENTO
+    # =========================================================================
+
+    def _agrupar_por_texto(self, revisoes: list) -> dict:
+        """
+        Agrupa revisoes por texto_original normalizado (OrderedDict).
+        Cada grupo contem a lista de revisoes e o texto_original bruto da primeira.
+        """
+        from collections import OrderedDict
+        grupos = OrderedDict()
+
+        for rev in revisoes:
+            texto_orig = rev.get('texto_original', '')
+            if not texto_orig:
+                continue
+            chave = normalizar_texto(texto_orig)
+            if chave not in grupos:
+                grupos[chave] = {
+                    'texto_original_bruto': texto_orig,
+                    'revisoes': [],
+                }
+            grupos[chave]['revisoes'].append(rev)
+
+        return grupos
+
+    # =========================================================================
+    # PROCESSAMENTO DE GRUPO
+    # =========================================================================
+
+    def _processar_grupo_comentarios(self, chave_normalizada: str, grupo: dict):
+        """
+        Busca o texto 1x no documento e aplica N comentarios com ranges sobrepostos.
+        """
+        texto_original = grupo['texto_original_bruto']
+        revs = grupo['revisoes']
+
+        resultado = self._encontrar_texto_avancado(texto_original)
+        if resultado is None:
+            self.estatisticas['falha'] += len(revs)
+            for rev in revs:
+                print(f"Comentario: texto nao encontrado: '{texto_original[:80]}...'")
+            return
+
+        paragraph, target_element, tier_name = resultado
+
+        # Contabiliza no tier correto
+        tier_map = {
+            'exato': 'exato',
+            'normalizado': 'normalizado',
+            'sem_bullets_exato': 'fuzzy',
+            'sem_bullets_normalizado': 'fuzzy',
+            'substring': 'fuzzy',
+            'jaccard': 'paragrafo',
+        }
+        stat_key = tier_map.get(tier_name, 'fuzzy')
+        self.estatisticas[stat_key] += len(revs)
+
+        # Registra comentarios e coleta IDs
+        comment_ids = []
+        for rev in revs:
+            cid = self.next_comment_id
+            self.next_comment_id += 1
+            comment_ids.append(cid)
+
+            corpo = self._formatar_comentario(rev)
+            self.comments.append({
+                'id': cid,
+                'autor': self.autor,
+                'corpo': corpo,
+            })
+
+        # Marca o trecho com ranges sobrepostos
+        self._marcar_multiplos_comentarios(paragraph, target_element, comment_ids)
+
+    # =========================================================================
+    # FORMATACAO DO COMENTARIO
+    # =========================================================================
+
+    def _formatar_comentario(self, rev: dict) -> str:
+        """
+        Formata o corpo do comentario com informacoes da revisao.
+        """
+        tipo = rev.get('tipo', 'REVISAO')
+        acao = rev.get('acao', 'substituir')
+        texto_original = rev.get('texto_original', '')
+        texto_novo = rev.get('texto_novo', '')
+        justificativa = rev.get('justificativa', '')
+
+        partes = [f"[{tipo}] Acao sugerida: {acao}"]
+
+        if texto_original:
+            partes.append(f'\nOriginal: "{texto_original}"')
+        if texto_novo:
+            partes.append(f'Sugerido: "{texto_novo}"')
+        if justificativa:
+            partes.append(f'\nJustificativa: {justificativa}')
+
+        return '\n'.join(partes)
+
+    # =========================================================================
+    # BUSCA DE TEXTO - 6 TIERS
+    # =========================================================================
+
+    def _obter_segmentos_paragrafo(self, paragraph):
+        """
+        Obtem segmentos de texto de um paragrafo (w:r + w:hyperlink + w:ins).
+        Retorna lista de dicts com: element, text, start, end.
+        """
+        segments = []
+        current_pos = 0
+
+        for child in paragraph:
+            if child.tag == f'{W_NS}r':
+                run_text = ''
+                for t in child.findall(f'{W_NS}t'):
+                    run_text += (t.text or '')
+                if run_text:
+                    segments.append({
+                        'element': child,
+                        'text': run_text,
+                        'start': current_pos,
+                        'end': current_pos + len(run_text),
+                    })
+                    current_pos += len(run_text)
+
+            elif child.tag == f'{W_NS}hyperlink':
+                for r in child.findall(f'{W_NS}r'):
+                    hl_text = ''
+                    for t in r.findall(f'{W_NS}t'):
+                        hl_text += (t.text or '')
+                    if hl_text:
+                        segments.append({
+                            'element': child,
+                            'text': hl_text,
+                            'start': current_pos,
+                            'end': current_pos + len(hl_text),
+                        })
+                        current_pos += len(hl_text)
+
+            elif child.tag == f'{W_NS}ins':
+                for r in child.findall(f'{W_NS}r'):
+                    ins_text = ''
+                    for t in r.findall(f'{W_NS}t'):
+                        ins_text += (t.text or '')
+                    if ins_text:
+                        segments.append({
+                            'element': child,
+                            'text': ins_text,
+                            'start': current_pos,
+                            'end': current_pos + len(ins_text),
+                        })
+                        current_pos += len(ins_text)
+
+        return segments
+
+    def _encontrar_texto_avancado(self, texto_busca: str):
+        """
+        Busca texto no documento com 6 tiers de fallback.
+
+        Retorna (paragraph, target_element, tier_name) ou None.
+        """
+        texto_norm = normalizar_texto(texto_busca)
+        texto_sem_bullet = strip_bullets(texto_busca)
+        texto_sem_bullet_norm = normalizar_texto(texto_sem_bullet)
+
+        # Substring: primeiras 8 palavras
+        palavras = texto_norm.split()
+        substring_busca = ' '.join(palavras[:8]) if len(palavras) > 8 else None
+
+        melhor_jaccard = None  # (score, paragraph, element)
+
+        for paragraph in self.doc_root.iter(f'{W_NS}p'):
+            segments = self._obter_segmentos_paragrafo(paragraph)
+            if not segments:
+                continue
+
+            full_text = ''.join(s['text'] for s in segments)
+            if not full_text.strip():
+                continue
+
+            first_elem = segments[0]['element']
+
+            # Tier 1: match exato
+            if texto_busca in full_text:
+                return (paragraph, first_elem, 'exato')
+
+            # Tier 2: match normalizado
+            full_norm = normalizar_texto(full_text)
+            if texto_norm and texto_norm in full_norm:
+                return (paragraph, first_elem, 'normalizado')
+
+            # Tier 3: sem bullets exato
+            if texto_sem_bullet and texto_sem_bullet != texto_busca:
+                if texto_sem_bullet in full_text:
+                    return (paragraph, first_elem, 'sem_bullets_exato')
+
+            # Tier 4: sem bullets normalizado
+            if texto_sem_bullet_norm and texto_sem_bullet_norm != texto_norm:
+                if texto_sem_bullet_norm in full_norm:
+                    return (paragraph, first_elem, 'sem_bullets_normalizado')
+
+            # Tier 5: substring (primeiras 8 palavras)
+            if substring_busca and substring_busca in full_norm:
+                return (paragraph, first_elem, 'substring')
+
+            # Tier 6: Jaccard similarity (acumula melhor candidato)
+            if texto_norm:
+                score = self._jaccard_similarity(texto_norm, full_norm)
+                if score >= 0.3:
+                    if melhor_jaccard is None or score > melhor_jaccard[0]:
+                        melhor_jaccard = (score, paragraph, first_elem)
+
+        # Retorna melhor match Jaccard se nenhum tier anterior deu certo
+        if melhor_jaccard is not None:
+            return (melhor_jaccard[1], melhor_jaccard[2], 'jaccard')
+
+        return None
+
+    def _jaccard_similarity(self, texto_a: str, texto_b: str) -> float:
+        """Calcula similaridade Jaccard entre duas strings (nivel de palavras)."""
+        set_a = set(texto_a.lower().split())
+        set_b = set(texto_b.lower().split())
+        if not set_a or not set_b:
+            return 0.0
+        intersecao = set_a & set_b
+        uniao = set_a | set_b
+        return len(intersecao) / len(uniao)
+
+    # =========================================================================
+    # MARCACAO DE COMENTARIOS (ranges sobrepostos)
+    # =========================================================================
+
+    def _marcar_multiplos_comentarios(self, paragraph, target_elem, comment_ids: list):
+        """
+        Insere ranges de comentarios sobrepostos ao redor de target_elem.
+
+        Estrutura OOXML gerada:
+            <commentRangeStart id="0"/>
+            <commentRangeStart id="1"/>
+            <w:r>texto</w:r>  (ou w:hyperlink, w:ins)
+            <commentRangeEnd id="0"/>
+            <commentRangeEnd id="1"/>
+            <w:r><commentReference id="0"/></w:r>
+            <w:r><commentReference id="1"/></w:r>
+        """
+        idx = list(paragraph).index(target_elem)
+
+        # Insere commentRangeStart para cada comentario (na ordem)
+        for i, cid in enumerate(comment_ids):
+            start = etree.Element(f'{W_NS}commentRangeStart')
+            start.set(f'{W_NS}id', str(cid))
+            paragraph.insert(idx + i, start)
+
+        # O target_elem foi deslocado por len(comment_ids) posicoes
+        target_new_idx = idx + len(comment_ids)
+
+        # Insere commentRangeEnd para cada comentario (apos o target)
+        for i, cid in enumerate(comment_ids):
+            end = etree.Element(f'{W_NS}commentRangeEnd')
+            end.set(f'{W_NS}id', str(cid))
+            paragraph.insert(target_new_idx + 1 + i, end)
+
+        # Insere commentReference para cada comentario (apos os ends)
+        ref_start_idx = target_new_idx + 1 + len(comment_ids)
+        for i, cid in enumerate(comment_ids):
+            ref_r = etree.Element(f'{W_NS}r')
+            ref = etree.SubElement(ref_r, f'{W_NS}commentReference')
+            ref.set(f'{W_NS}id', str(cid))
+            paragraph.insert(ref_start_idx + i, ref_r)
+
+    # =========================================================================
+    # GERACAO DE COMMENTS.XML
+    # =========================================================================
+
+    def _adicionar_comments(self):
+        """Cria comments.xml com corpo multi-paragrafo."""
+        NSMAP = {'w': NAMESPACES['w']}
+        comments_xml = etree.Element(f'{W_NS}comments', nsmap=NSMAP)
+
+        for comment in self.comments:
+            comm_elem = etree.SubElement(comments_xml, f'{W_NS}comment')
+            comm_elem.set(f'{W_NS}id', str(comment['id']))
+            comm_elem.set(f'{W_NS}author', comment['autor'])
+            comm_elem.set(f'{W_NS}date', datetime.now().isoformat())
+
+            # Corpo multi-paragrafo: cada \n gera um w:p separado
+            linhas = comment['corpo'].split('\n')
+            for linha in linhas:
+                p = etree.SubElement(comm_elem, f'{W_NS}p')
+                if linha.strip():
+                    r = etree.SubElement(p, f'{W_NS}r')
+                    t = etree.SubElement(r, f'{W_NS}t')
+                    t.text = linha
+                    t.set(f'{XML_NS}space', 'preserve')
+                # Linha vazia: w:p sem filhos (paragrafo vazio = espaco visual)
+
+        comments_path = os.path.join(self.temp_dir, 'word', 'comments.xml')
+        comments_tree = etree.ElementTree(comments_xml)
+        comments_tree.write(
+            comments_path, xml_declaration=True, encoding='UTF-8', standalone=True
+        )
+
+        self._atualizar_content_types()
+        self._atualizar_rels()
+
+    # =========================================================================
+    # INFRAESTRUTURA DOCX (duplicada para independencia)
+    # =========================================================================
+
+    def _atualizar_content_types(self):
+        """Atualiza [Content_Types].xml para incluir comments.xml."""
+        content_types_path = os.path.join(self.temp_dir, '[Content_Types].xml')
+        ct_tree = etree.parse(content_types_path)
+        ct_root = ct_tree.getroot()
+
+        for override in ct_root.findall('.//{*}Override'):
+            if override.get('PartName') == '/word/comments.xml':
+                return
+
+        override = etree.SubElement(ct_root, 'Override')
+        override.set('PartName', '/word/comments.xml')
+        override.set('ContentType',
+                     'application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml')
+
+        ct_tree.write(content_types_path, xml_declaration=True, encoding='UTF-8', standalone=True)
+
+    def _atualizar_rels(self):
+        """Atualiza document.xml.rels para incluir relacionamento com comments.xml."""
+        rels_path = os.path.join(self.temp_dir, 'word', '_rels', 'document.xml.rels')
+        rels_tree = etree.parse(rels_path)
+        rels_root = rels_tree.getroot()
+
+        for rel in rels_root:
+            if rel.get('Target') == 'comments.xml':
+                return
+
+        rel_count = len(rels_root)
+
+        rel = etree.SubElement(rels_root, f'{{{REL_NS}}}Relationship')
+        rel.set('Id', f'rId{rel_count + 1}')
+        rel.set('Type',
+                'http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments')
+        rel.set('Target', 'comments.xml')
+
+        rels_tree.write(rels_path, xml_declaration=True, encoding='UTF-8', standalone=True)
+
+    def _recompactar_docx(self):
+        """Recompacta o diretorio temporario em um arquivo DOCX."""
+        with zipfile.ZipFile(self.output_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for root_dir, dirs, files in os.walk(self.temp_dir):
+                for file in files:
+                    file_path = os.path.join(root_dir, file)
+                    arc_name = os.path.relpath(file_path, self.temp_dir)
+                    zipf.write(file_path, arc_name)
+
+
+# =============================================================================
+# FUNCOES DE CONVENIENCIA
 # =============================================================================
 
 def aplicar_revisoes_docx(
@@ -1016,3 +1456,17 @@ def aplicar_revisoes_docx(
     """
     applicator = TrackChangesApplicator(input_path, output_path)
     return applicator.aplicar_revisoes(revisoes, autor)
+
+
+def aplicar_comentarios_docx(
+    input_path: str,
+    output_path: str,
+    revisoes: list,
+    autor: str = "Agente IA Revisor"
+) -> dict:
+    """
+    Funcao de conveniencia para aplicar somente comentarios a um documento.
+    Nao altera o texto do documento - apenas adiciona comentarios.
+    """
+    applicator = CommentApplicator(input_path, output_path)
+    return applicator.aplicar_comentarios(revisoes, autor)
