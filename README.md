@@ -8,7 +8,7 @@ git push
 
 OU
 
-git add -A && git commit -m "Ajuste no processo de conversão do HTML para DOCX dando suporte para WEBP (animado ou não)" && git push
+git add -A && git commit -m "Adiciona verificações defensivas contra NoneType em segmentos" && git push
 
 ---
 

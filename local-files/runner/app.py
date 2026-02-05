@@ -908,7 +908,7 @@ def download_image(url: str) -> Optional[BytesIO]:
         return None
 
 
-def convert_image_for_docx(image_bytes: BytesIO) -> Optional[BytesIO]:
+def convert_image_for_docx(image_bytes: Optional[BytesIO]) -> Optional[BytesIO]:
     """
     Converte imagem para formato compativel com python-docx.
 
@@ -917,6 +917,9 @@ def convert_image_for_docx(image_bytes: BytesIO) -> Optional[BytesIO]:
     - Outros formatos nao suportados -> PNG
     - Formatos suportados (PNG, JPEG, GIF, BMP, TIFF) -> retorna original
     """
+    if image_bytes is None:
+        return None
+
     from PIL import Image
 
     SUPPORTED_FORMATS = {'PNG', 'JPEG', 'GIF', 'BMP', 'TIFF', 'JPG'}
@@ -1040,11 +1043,13 @@ def process_list_item_content_docx(doc, li, paragraph):
     if isinstance(li, dict):
         if 'segments' in li and li['segments']:
             for seg in li['segments']:
-                seg_text = seg.get('text', '')
+                if seg is None or not isinstance(seg, dict):
+                    continue
+                seg_text = seg.get('text', '') or ''
                 seg_link = seg.get('link')
                 seg_bold = seg.get('bold', False)
                 seg_italic = seg.get('italic', False)
-                
+
                 if seg_link:
                     add_hyperlink(paragraph, seg_text, seg_link)
                 else:
@@ -1629,10 +1634,12 @@ async def generate_docx(payload: GenerateDocxPayload):
                 
                 if item.segments:
                     for seg in item.segments:
+                        if seg is None:
+                            continue
                         if seg.link:
-                            add_hyperlink(para, seg.text, seg.link)
+                            add_hyperlink(para, seg.text or '', seg.link)
                         else:
-                            run = para.add_run(seg.text)
+                            run = para.add_run(seg.text or '')
                             run.font.name = 'Arial'
                             run.font.size = Pt(12)
                             if seg.bold:
@@ -1654,12 +1661,14 @@ async def generate_docx(payload: GenerateDocxPayload):
                 if item.segments:
                     quote_para = doc.add_paragraph()
                     quote_para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-                    
+
                     for seg in item.segments:
+                        if seg is None:
+                            continue
                         if seg.link:
-                            add_hyperlink(quote_para, seg.text, seg.link)
+                            add_hyperlink(quote_para, seg.text or '', seg.link)
                         else:
-                            run = quote_para.add_run(seg.text)
+                            run = quote_para.add_run(seg.text or '')
                             run.font.name = 'Arial'
                             run.font.size = Pt(12)
                             run.italic = True
