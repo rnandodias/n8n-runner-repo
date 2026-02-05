@@ -27,7 +27,7 @@ from openai import OpenAI
 # FastAPI
 from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, Form
 from fastapi.responses import JSONResponse, Response, FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 # Playwright
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
@@ -140,6 +140,20 @@ class ContentItem(BaseModel):
     rows: Optional[List[List[str]]] = None
     cite: Optional[str] = None
 
+    @field_validator('segments', mode='before')
+    @classmethod
+    def filter_none_segments(cls, v):
+        if v is None:
+            return None
+        return [seg for seg in v if seg is not None]
+
+    @field_validator('items', mode='before')
+    @classmethod
+    def filter_none_items(cls, v):
+        if v is None:
+            return None
+        return [item for item in v if item is not None]
+
 
 class ArticleMetadata(BaseModel):
     title: Optional[str] = None
@@ -152,6 +166,13 @@ class GenerateDocxPayload(BaseModel):
     content: List[ContentItem]
     filename: Optional[str] = "documento.docx"
     base_url: Optional[str] = None
+
+    @field_validator('content', mode='before')
+    @classmethod
+    def filter_none_content(cls, v):
+        if v is None:
+            return []
+        return [item for item in v if item is not None]
 
 
 class ExtractArticlePayload(BaseModel):
@@ -1040,6 +1061,8 @@ def add_left_border(paragraph, color: str = '0066CC', width: int = 24):
 
 def process_list_item_content_docx(doc, li, paragraph):
     """Processa conteúdo de item de lista no DOCX."""
+    if li is None:
+        return
     if isinstance(li, dict):
         if 'segments' in li and li['segments']:
             for seg in li['segments']:
@@ -1060,11 +1083,11 @@ def process_list_item_content_docx(doc, li, paragraph):
                         run.bold = True
                     if seg_italic:
                         run.italic = True
-        elif 'text' in li:
-            run = paragraph.add_run(li['text'])
+        elif 'text' in li and li['text']:
+            run = paragraph.add_run(str(li['text']))
             run.font.name = 'Arial'
             run.font.size = Pt(12)
-    else:
+    elif li:
         run = paragraph.add_run(str(li))
         run.font.name = 'Arial'
         run.font.size = Pt(12)
@@ -1072,9 +1095,13 @@ def process_list_item_content_docx(doc, li, paragraph):
 
 def process_nested_list_docx(doc, items, ordered=False, indent_level=0):
     """Processa lista aninhada no DOCX."""
+    if not items:
+        return
     markers = ["• ", "◦ ", "▪ ", "- "]
-    
+
     for idx, li in enumerate(items):
+        if li is None:
+            continue
         list_para = doc.add_paragraph()
         list_para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
         
@@ -1599,7 +1626,9 @@ async def generate_docx(payload: GenerateDocxPayload):
         doc.add_paragraph("_" * 80)
         
         for item in payload.content:
-            
+            if item is None:
+                continue
+
             if item.type == "heading" and item.text:
                 spacer = doc.add_paragraph()
                 spacer.space_after = Pt(0)

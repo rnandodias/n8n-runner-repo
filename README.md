@@ -8,7 +8,7 @@ git push
 
 OU
 
-git add -A && git commit -m "Adiciona verificações defensivas contra NoneType em segmentos" && git push
+git add -A && git commit -m "Adiciona validators Pydantic e null checks defensivos" && git push
 
 ---
 
