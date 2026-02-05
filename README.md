@@ -8,7 +8,7 @@ git push
 
 OU
 
-git add -A && git commit -m "Adiciona validators Pydantic e null checks defensivos" && git push
+git add -A && git commit -m "Fix: move PIL import para antes do UNO evitando conflito de imports" && git push
 
 ---
 

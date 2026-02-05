@@ -40,6 +40,9 @@ from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
+# PIL - DEVE ser importado ANTES do UNO para evitar conflito de imports
+from PIL import Image as PILImage
+
 # LibreOffice UNO (opcional)
 try:
     import uno
@@ -941,13 +944,11 @@ def convert_image_for_docx(image_bytes: Optional[BytesIO]) -> Optional[BytesIO]:
     if image_bytes is None:
         return None
 
-    from PIL import Image
-
     SUPPORTED_FORMATS = {'PNG', 'JPEG', 'GIF', 'BMP', 'TIFF', 'JPG'}
 
     try:
         image_bytes.seek(0)
-        img = Image.open(image_bytes)
+        img = PILImage.open(image_bytes)
 
         # Se ja e formato suportado, retorna original
         if img.format and img.format.upper() in SUPPORTED_FORMATS:
@@ -970,8 +971,6 @@ def convert_image_for_docx(image_bytes: Optional[BytesIO]) -> Optional[BytesIO]:
 
 def _convert_animated_webp_to_gif(img) -> BytesIO:
     """Converte WEBP animado para GIF preservando animacao."""
-    from PIL import Image
-
     frames = []
     durations = []
 
@@ -982,14 +981,14 @@ def _convert_animated_webp_to_gif(img) -> BytesIO:
             # GIF requer modo P (paleta) ou L (grayscale)
             if frame.mode in ('RGBA', 'LA'):
                 # Compoe sobre fundo branco para remover transparencia
-                background = Image.new('RGBA', frame.size, (255, 255, 255, 255))
+                background = PILImage.new('RGBA', frame.size, (255, 255, 255, 255))
                 if frame.mode == 'RGBA':
                     background.paste(frame, mask=frame.split()[3])
                 else:
                     background.paste(frame)
-                frame = background.convert('RGB').convert('P', palette=Image.ADAPTIVE, colors=256)
+                frame = background.convert('RGB').convert('P', palette=PILImage.ADAPTIVE, colors=256)
             elif frame.mode != 'P':
-                frame = frame.convert('P', palette=Image.ADAPTIVE, colors=256)
+                frame = frame.convert('P', palette=PILImage.ADAPTIVE, colors=256)
 
             frames.append(frame)
             durations.append(img.info.get('duration', 100))
@@ -1031,9 +1030,8 @@ def _convert_to_png(img) -> BytesIO:
 
 def get_image_dimensions_from_bytes(image_bytes: BytesIO) -> tuple:
     try:
-        from PIL import Image
         image_bytes.seek(0)
-        img = Image.open(image_bytes)
+        img = PILImage.open(image_bytes)
         width, height = img.size
         image_bytes.seek(0)
         return width, height
