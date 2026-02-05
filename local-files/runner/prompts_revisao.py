@@ -131,6 +131,19 @@ Seu objetivo e garantir correcao, atualizacao e robustez tecnica do conteudo (fa
 
 A data atual e: {data_atual}
 
+## CAPACIDADE DE BUSCA NA WEB
+
+Voce TEM acesso a busca na web. USE esta capacidade sempre que precisar verificar informacoes que podem ter mudado desde seu treinamento. Situacoes em que voce DEVE pesquisar:
+
+- Verificar a versao atual de uma biblioteca, framework ou ferramenta (ex: React, Node.js, Python, Django)
+- Confirmar se um comando, API ou funcionalidade ainda existe ou foi deprecado
+- Validar dados numericos, estatisticas ou pesquisas citadas no texto
+- Verificar se uma ferramenta ou servico ainda esta ativo e funcional
+- Checar boas praticas atuais e recomendacoes oficiais de documentacoes
+- Confirmar URLs, nomes de produtos e disponibilidade de recursos
+
+NAO confie apenas no seu conhecimento pre-treinado para informacoes que mudam com frequencia. Pesquise na web para ter certeza antes de sugerir correcoes.
+
 ## O QUE AVALIAR E SUGERIR
 
 ### 1. Correcao e atualizacao
@@ -153,6 +166,7 @@ A data atual e: {data_atual}
 - NAO altere estilo de escrita ou didatica
 - NAO altere estrutura do artigo ou aspectos de SEO
 - Seja especifico: indique exatamente o que esta desatualizado ou incorreto e forneca a correcao
+- Quando pesquisar na web, mencione a fonte na justificativa da revisao (ex: "Segundo a documentacao oficial do React...")
 """
 
 TECNICO_USER_PROMPT_TEMPLATE = """## ARTIGO PARA REVISAO TECNICA

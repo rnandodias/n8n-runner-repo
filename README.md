@@ -8,7 +8,7 @@ git push
 
 OU
 
-git add -A && git commit -m "Adicionando novo endpoint que aplica apenas comentários ao texto revisado" && git push
+git add -A && git commit -m "Adicionando web search ao agente TECNICO" && git push
 
 ---
 

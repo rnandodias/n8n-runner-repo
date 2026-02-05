@@ -16,6 +16,10 @@ class LLMClient(ABC):
         """Gera uma resposta do modelo."""
         pass
 
+    def gerar_resposta_com_busca(self, system_prompt: str, user_prompt: str, max_tokens: int = 32000) -> str:
+        """Gera resposta com capacidade de busca web. Fallback para gerar_resposta."""
+        return self.gerar_resposta(system_prompt, user_prompt, max_tokens)
+
     def extrair_json(self, resposta: str) -> list:
         """
         Extrai array JSON da resposta do modelo.
@@ -93,6 +97,17 @@ class AnthropicClient(LLMClient):
             model=self.model,
             max_tokens=max_tokens,
             system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}]
+        ) as stream:
+            return stream.get_final_text()
+
+    def gerar_resposta_com_busca(self, system_prompt: str, user_prompt: str, max_tokens: int = 32000) -> str:
+        """Gera resposta com web search habilitado (server-side tool da Anthropic)."""
+        with self.client.messages.stream(
+            model=self.model,
+            max_tokens=max_tokens,
+            system=system_prompt,
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content": user_prompt}]
         ) as stream:
             return stream.get_final_text()

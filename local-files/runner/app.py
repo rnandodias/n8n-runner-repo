@@ -2226,9 +2226,9 @@ async def revisao_agente_tecnico(payload: RevisaoAgentPayload):
             data_publicacao=payload.data_publicacao or ""
         )
 
-        # Chama LLM
+        # Chama LLM (com busca web quando disponivel)
         llm_client = criar_cliente_llm(provider=payload.provider)
-        resposta = llm_client.gerar_resposta(system_prompt, user_prompt)
+        resposta = llm_client.gerar_resposta_com_busca(system_prompt, user_prompt)
         revisoes = llm_client.extrair_json(resposta)
 
         # Garante tipo TECNICO
@@ -2436,7 +2436,7 @@ async def revisao_agente_tecnico_form(
         )
 
         llm_client = criar_cliente_llm(provider=provider)
-        resposta = llm_client.gerar_resposta(system_prompt, user_prompt)
+        resposta = llm_client.gerar_resposta_com_busca(system_prompt, user_prompt)
         revisoes = llm_client.extrair_json(resposta)
 
         for rev in revisoes:
