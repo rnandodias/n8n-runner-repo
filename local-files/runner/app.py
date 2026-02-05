@@ -908,6 +908,103 @@ def download_image(url: str) -> Optional[BytesIO]:
         return None
 
 
+def convert_image_for_docx(image_bytes: BytesIO) -> Optional[BytesIO]:
+    """
+    Converte imagem para formato compativel com python-docx.
+
+    - WEBP animado -> GIF (preserva animacao)
+    - WEBP estatico -> PNG
+    - Outros formatos nao suportados -> PNG
+    - Formatos suportados (PNG, JPEG, GIF, BMP, TIFF) -> retorna original
+    """
+    from PIL import Image
+
+    SUPPORTED_FORMATS = {'PNG', 'JPEG', 'GIF', 'BMP', 'TIFF', 'JPG'}
+
+    try:
+        image_bytes.seek(0)
+        img = Image.open(image_bytes)
+
+        # Se ja e formato suportado, retorna original
+        if img.format and img.format.upper() in SUPPORTED_FORMATS:
+            image_bytes.seek(0)
+            return image_bytes
+
+        # WEBP animado -> GIF
+        if img.format == 'WEBP' and getattr(img, 'is_animated', False):
+            print(f"  [CONV] WEBP animado -> GIF ({img.n_frames} frames)")
+            return _convert_animated_webp_to_gif(img)
+
+        # WEBP estatico ou outro formato -> PNG
+        print(f"  [CONV] {img.format or 'unknown'} -> PNG")
+        return _convert_to_png(img)
+
+    except Exception as e:
+        print(f"  [ERRO] Conversao de imagem: {e}")
+        return None
+
+
+def _convert_animated_webp_to_gif(img) -> BytesIO:
+    """Converte WEBP animado para GIF preservando animacao."""
+    from PIL import Image
+
+    frames = []
+    durations = []
+
+    try:
+        while True:
+            frame = img.copy()
+
+            # GIF requer modo P (paleta) ou L (grayscale)
+            if frame.mode in ('RGBA', 'LA'):
+                # Compoe sobre fundo branco para remover transparencia
+                background = Image.new('RGBA', frame.size, (255, 255, 255, 255))
+                if frame.mode == 'RGBA':
+                    background.paste(frame, mask=frame.split()[3])
+                else:
+                    background.paste(frame)
+                frame = background.convert('RGB').convert('P', palette=Image.ADAPTIVE, colors=256)
+            elif frame.mode != 'P':
+                frame = frame.convert('P', palette=Image.ADAPTIVE, colors=256)
+
+            frames.append(frame)
+            durations.append(img.info.get('duration', 100))
+            img.seek(img.tell() + 1)
+    except EOFError:
+        pass
+
+    if not frames:
+        raise ValueError("Nenhum frame extraido do WEBP animado")
+
+    gif_buffer = BytesIO()
+    frames[0].save(
+        gif_buffer,
+        format='GIF',
+        save_all=True,
+        append_images=frames[1:],
+        duration=durations,
+        loop=0
+    )
+    gif_buffer.seek(0)
+    return gif_buffer
+
+
+def _convert_to_png(img) -> BytesIO:
+    """Converte imagem para PNG."""
+    # Converte para RGB se necessario (remove canal alpha para compatibilidade)
+    if img.mode in ('RGBA', 'LA', 'P'):
+        # Mantem RGBA para PNG (suporta transparencia)
+        if img.mode == 'P':
+            img = img.convert('RGBA')
+    elif img.mode not in ('RGB', 'L'):
+        img = img.convert('RGB')
+
+    png_buffer = BytesIO()
+    img.save(png_buffer, format='PNG')
+    png_buffer.seek(0)
+    return png_buffer
+
+
 def get_image_dimensions_from_bytes(image_bytes: BytesIO) -> tuple:
     try:
         from PIL import Image
@@ -1625,12 +1722,16 @@ async def generate_docx(payload: GenerateDocxPayload):
                 image_url = convert_relative_url(item.url, payload.base_url)
                 print(f"🖼️ Baixando imagem: {image_url[:80]}...")
                 image_data = download_image(image_url)
-                
+
+                if image_data:
+                    # Converte para formato compativel com python-docx se necessario
+                    image_data = convert_image_for_docx(image_data)
+
                 if image_data:
                     try:
                         orig_width, orig_height = get_image_dimensions_from_bytes(image_data)
                         max_width_cm = 15
-                        
+
                         if orig_width and orig_height:
                             width_cm = orig_width / 96 * 2.54
                             height_cm = orig_height / 96 * 2.54
@@ -1647,9 +1748,9 @@ async def generate_docx(payload: GenerateDocxPayload):
                             img_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
                             run = img_para.add_run()
                             run.add_picture(image_data, width=Cm(max_width_cm))
-                        
+
                         img_para.space_after = Pt(6)
-                        
+
                         if item.alt and len(item.alt) > 5:
                             caption_para = doc.add_paragraph()
                             caption_run = caption_para.add_run(item.alt)
@@ -1658,7 +1759,7 @@ async def generate_docx(payload: GenerateDocxPayload):
                             caption_run.font.color.rgb = RGBColor(102, 102, 102)
                             caption_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
                             caption_para.space_after = Pt(12)
-                        
+
                         print(f"✅ Imagem adicionada")
                     except Exception as img_error:
                         print(f"❌ Erro ao processar imagem: {img_error}")

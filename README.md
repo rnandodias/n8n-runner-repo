@@ -8,7 +8,7 @@ git push
 
 OU
 
-git add -A && git commit -m "Adicionando web search ao agente TECNICO" && git push
+git add -A && git commit -m "Ajuste no processo de conversão do HTML para DOCX dando suporte para WEBP (animado ou não)" && git push
 
 ---
 
