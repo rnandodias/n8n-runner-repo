@@ -1166,6 +1166,7 @@ class CommentApplicator:
     def _formatar_comentario(self, rev: dict) -> str:
         """
         Formata o corpo do comentario com informacoes da revisao.
+        Formato visual aprimorado para melhor leitura no Word.
         """
         tipo = rev.get('tipo', 'REVISAO')
         acao = rev.get('acao', 'substituir')
@@ -1173,14 +1174,34 @@ class CommentApplicator:
         texto_novo = rev.get('texto_novo', '')
         justificativa = rev.get('justificativa', '')
 
-        partes = [f"[{tipo}] Acao sugerida: {acao}"]
+        # Linha separadora (caractere que funciona bem no Word)
+        separador = "─" * 20
 
+        partes = [separador]
+
+        # Cabecalho: Tipo e Acao
+        partes.append(f"🏷️ {tipo}  |  🔧 {acao.upper()}")
+        partes.append("")  # linha em branco
+
+        # Original
         if texto_original:
-            partes.append(f'\nOriginal: "{texto_original}"')
-        if texto_novo:
-            partes.append(f'Sugerido: "{texto_novo}"')
+            partes.append("📌 Original:")
+            partes.append(f'"{texto_original}"')
+            partes.append("")  # linha em branco
+
+        # Sugerido (omite se vazio - ex: delecao ou comentario puro)
+        if texto_novo and texto_novo.strip():
+            partes.append("✏️ Sugerido:")
+            partes.append(f'"{texto_novo}"')
+            partes.append("")  # linha em branco
+
+        # Justificativa
         if justificativa:
-            partes.append(f'\nJustificativa: {justificativa}')
+            partes.append("💬 Justificativa:")
+            partes.append(justificativa)
+            partes.append("")  # linha em branco
+
+        partes.append(separador)
 
         return '\n'.join(partes)
 
