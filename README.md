@@ -8,7 +8,7 @@ git push
 
 OU
 
-git add -A && git commit -m "Alteração cosmética nos comentário do DOCX" && git push
+git add -A && git commit -m "Alteração cosmética nos comentário do DOCX - Mudança nos ícones" && git push
 
 ---
 

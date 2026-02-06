@@ -1168,19 +1168,24 @@ class CommentApplicator:
         Formata o corpo do comentario com informacoes da revisao.
         Formato visual aprimorado para melhor leitura no Word.
         """
-        tipo = rev.get('tipo', 'REVISAO')
+        tipo = rev.get('tipo', 'REVISAO').upper()
         acao = rev.get('acao', 'substituir')
         texto_original = rev.get('texto_original', '')
         texto_novo = rev.get('texto_novo', '')
         justificativa = rev.get('justificativa', '')
 
-        # Linha separadora (caractere que funciona bem no Word)
-        separador = "─" * 20
+        # Icone baseado no tipo de revisao
+        icones_tipo = {
+            'SEO': '🔍',
+            'TECNICO': '🔬',
+            'TEXTO': '📝',
+        }
+        icone = icones_tipo.get(tipo, '🏷️')
 
-        partes = [separador]
+        partes = []
 
         # Cabecalho: Tipo e Acao
-        partes.append(f"🏷️ {tipo}  |  🔧 {acao.upper()}")
+        partes.append(f"{icone} {tipo}  |  🔧 {acao.upper()}")
         partes.append("")  # linha em branco
 
         # Original
@@ -1199,9 +1204,6 @@ class CommentApplicator:
         if justificativa:
             partes.append("💬 Justificativa:")
             partes.append(justificativa)
-            partes.append("")  # linha em branco
-
-        partes.append(separador)
 
         return '\n'.join(partes)
 
