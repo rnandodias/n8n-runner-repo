@@ -8,7 +8,7 @@ git push
 
 OU
 
-git add -A && git commit -m "Alteração cosmética nos comentário do DOCX - Mudança nos ícones" && git push
+git add -A && git commit -m "Ajuste no endpoit aplicar-comentarios-form para ter como retorno um arquivo com o nome correto" && git push
 
 ---
 

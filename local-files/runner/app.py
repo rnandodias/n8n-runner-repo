@@ -2708,6 +2708,9 @@ async def revisao_aplicar_comentarios_form(
     """
     import json as json_lib
 
+    # Preserva o nome original do arquivo
+    original_filename = file.filename or "documento.docx"
+
     docx_bytes = await file.read()
     with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
         tmp.write(docx_bytes)
@@ -2731,7 +2734,7 @@ async def revisao_aplicar_comentarios_form(
         return FileResponse(
             output_path,
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            filename="documento_comentado.docx",
+            filename=original_filename,
             headers={
                 "X-Total-Comentarios": str(resultado.get('total_comentarios', 0)),
                 "X-Match-Exato": str(stats.get('exato', 0)),
