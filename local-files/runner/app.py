@@ -2759,23 +2759,33 @@ async def revisao_agente_imagem(payload: RevisaoImagemPayload):
             llm_client = criar_cliente_llm(provider=payload.provider)
 
             # Anthropic: visao + busca web | OpenAI: apenas visao
+            print(f"🤖 Chamando LLM ({payload.provider}) com {len(imagens)} imagens...")
             resposta = llm_client.gerar_resposta_com_imagens_e_busca(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 imagens=imagens
             )
 
-            revisoes = llm_client.extrair_json(resposta)
+            print(f"📝 Resposta recebida ({len(resposta)} chars)")
+            print(f"📝 Preview: {resposta[:500]}...")
 
-            # Garante tipo IMAGEM em todas as revisoes
+            revisoes = llm_client.extrair_json(resposta)
+            print(f"✅ {len(revisoes)} revisoes extraidas")
+
+            # Garante tipo IMAGEM em todas as revisoes (filtra apenas dicts validos)
+            revisoes_validas = []
             for rev in revisoes:
-                rev["tipo"] = "IMAGEM"
+                if isinstance(rev, dict):
+                    rev["tipo"] = "IMAGEM"
+                    revisoes_validas.append(rev)
+                else:
+                    print(f"⚠️ Revisao ignorada (nao e dict): {type(rev)} - {str(rev)[:100]}")
 
             return {
                 "tipo": "IMAGEM",
-                "total_sugestoes": len(revisoes),
+                "total_sugestoes": len(revisoes_validas),
                 "total_imagens": len(imagens),
-                "revisoes": revisoes
+                "revisoes": revisoes_validas
             }
 
         finally:
@@ -2857,23 +2867,33 @@ async def revisao_agente_imagem_form(
         llm_client = criar_cliente_llm(provider=provider)
 
         # Anthropic: visao + busca web | OpenAI: apenas visao
+        print(f"🤖 Chamando LLM ({provider}) com {len(imagens)} imagens...")
         resposta = llm_client.gerar_resposta_com_imagens_e_busca(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             imagens=imagens
         )
 
-        revisoes = llm_client.extrair_json(resposta)
+        print(f"📝 Resposta recebida ({len(resposta)} chars)")
+        print(f"📝 Preview: {resposta[:500]}...")
 
-        # Garante tipo IMAGEM em todas as revisoes
+        revisoes = llm_client.extrair_json(resposta)
+        print(f"✅ {len(revisoes)} revisoes extraidas")
+
+        # Garante tipo IMAGEM em todas as revisoes (filtra apenas dicts validos)
+        revisoes_validas = []
         for rev in revisoes:
-            rev["tipo"] = "IMAGEM"
+            if isinstance(rev, dict):
+                rev["tipo"] = "IMAGEM"
+                revisoes_validas.append(rev)
+            else:
+                print(f"⚠️ Revisao ignorada (nao e dict): {type(rev)} - {str(rev)[:100]}")
 
         return {
             "tipo": "IMAGEM",
-            "total_sugestoes": len(revisoes),
+            "total_sugestoes": len(revisoes_validas),
             "total_imagens": len(imagens),
-            "revisoes": revisoes
+            "revisoes": revisoes_validas
         }
 
     except httpx.HTTPError as e:

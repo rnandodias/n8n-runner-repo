@@ -95,7 +95,12 @@ class LLMClient(ABC):
         Extrai array JSON da resposta do modelo.
         Resiliente a: markdown fences, JSON truncado, erros parciais.
         Recupera o maximo de objetos possiveis mesmo com erros.
+        Retorna apenas dicts validos.
         """
+        if not resposta:
+            print("AVISO: Resposta vazia do LLM")
+            return []
+
         resposta = resposta.strip()
 
         # Remove markdown code fences (```json ... ``` ou ``` ... ```)
@@ -110,11 +115,15 @@ class LLMClient(ABC):
         if json_match:
             json_text = json_match.group()
 
+        def _filtrar_dicts(items: list) -> list:
+            """Filtra apenas dicts validos da lista."""
+            return [item for item in items if isinstance(item, dict)]
+
         # Tentativa 1: parse direto
         try:
             result = json.loads(json_text)
             if isinstance(result, list):
-                return result
+                return _filtrar_dicts(result)
         except json.JSONDecodeError:
             pass
 
@@ -129,8 +138,10 @@ class LLMClient(ABC):
                 truncated = truncated.rstrip().rstrip(',') + ']'
                 result = json.loads(truncated)
                 if isinstance(result, list) and result:
-                    print(f"JSON reparado (truncado): {len(result)} revisoes recuperadas")
-                    return result
+                    filtered = _filtrar_dicts(result)
+                    if filtered:
+                        print(f"JSON reparado (truncado): {len(filtered)} revisoes recuperadas")
+                        return filtered
         except json.JSONDecodeError:
             pass
 
@@ -141,7 +152,8 @@ class LLMClient(ABC):
         for m in re.finditer(r'\{[^{}]*"acao"\s*:[^{}]*\}', json_text):
             try:
                 obj = json.loads(m.group())
-                objects.append(obj)
+                if isinstance(obj, dict):
+                    objects.append(obj)
             except json.JSONDecodeError:
                 continue
 
@@ -150,7 +162,7 @@ class LLMClient(ABC):
             return objects
 
         print(f"Erro ao parsear JSON: nenhuma revisao recuperada")
-        print(f"Resposta: {resposta[:500]}...")
+        print(f"Resposta (preview): {resposta[:500]}...")
         return []
 
 

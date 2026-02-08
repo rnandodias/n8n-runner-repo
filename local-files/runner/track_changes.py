@@ -1179,6 +1179,7 @@ class CommentApplicator:
             'SEO': '🔍',
             'TECNICO': '🔬',
             'TEXTO': '📝',
+            'IMAGEM': '🖼️',
         }
         icone = icones_tipo.get(tipo, '🏷️')
 
