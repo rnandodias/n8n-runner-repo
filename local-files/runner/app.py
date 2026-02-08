@@ -58,7 +58,8 @@ from llm_client import criar_cliente_llm
 from prompts_revisao import (
     formatar_prompt_seo,
     formatar_prompt_tecnico,
-    formatar_prompt_texto
+    formatar_prompt_texto,
+    formatar_prompt_imagem
 )
 
 
@@ -233,6 +234,15 @@ class RevisaoAgentPayload(BaseModel):
     url_artigo: Optional[str] = ""  # URL original do artigo (contexto)
     titulo: Optional[str] = ""  # Título do artigo (contexto)
     data_publicacao: Optional[str] = ""  # Data de publicação (contexto)
+
+
+class RevisaoImagemPayload(BaseModel):
+    """Payload para o agente de revisão de imagens."""
+    docx_url: Optional[str] = None  # URL do documento DOCX
+    docx_base64: Optional[str] = None  # Ou base64 do documento
+    provider: str = "anthropic"  # "anthropic" ou "openai"
+    url_artigo: str  # URL original do artigo (OBRIGATÓRIO para extrair imagens)
+    titulo: Optional[str] = ""  # Título do artigo (contexto)
 
 
 # ============================================================================
@@ -2178,8 +2188,45 @@ async def revisao_aplicar_json(
 # ENDPOINTS - AGENTES DE REVISAO (LLM)
 # ============================================================================
 
-def _extrair_texto_para_revisao(docx_path: str) -> tuple:
-    """Extrai texto estruturado de um DOCX para analise."""
+def _is_image_caption(para) -> bool:
+    """
+    Detecta se um paragrafo e uma legenda de imagem.
+    Legendas sao geradas com: alinhamento centralizado, italico, Pt(10), cor cinza (102,102,102).
+    """
+    # Verifica alinhamento centralizado
+    if para.alignment != WD_ALIGN_PARAGRAPH.CENTER:
+        return False
+
+    # Verifica se tem runs
+    runs = para.runs
+    if not runs:
+        return False
+
+    # Verifica se TODOS os runs sao italicos e tem font size 10pt
+    for run in runs:
+        if not run.italic:
+            return False
+        if run.font.size and run.font.size != Pt(10):
+            return False
+        # Verifica cor cinza (102, 102, 102) se definida
+        if run.font.color.rgb:
+            if run.font.color.rgb != RGBColor(102, 102, 102):
+                return False
+
+    return True
+
+
+def _extrair_texto_para_revisao(docx_path: str, incluir_legendas: bool = False) -> tuple:
+    """
+    Extrai texto estruturado de um DOCX para analise.
+
+    Args:
+        docx_path: Caminho do arquivo DOCX
+        incluir_legendas: Se True, inclui legendas de imagem (para agente de imagem)
+
+    Returns:
+        (texto_completo, titulo)
+    """
     doc = Document(docx_path)
     paragrafos = []
     texto_parts = []
@@ -2189,6 +2236,20 @@ def _extrair_texto_para_revisao(docx_path: str) -> tuple:
     for para in doc.paragraphs:
         texto = para.text.strip()
         if not texto:
+            continue
+
+        # Detecta legendas de imagem
+        if _is_image_caption(para):
+            if incluir_legendas:
+                # Para o agente de imagem, marca como legenda
+                paragrafos.append({
+                    "indice": idx,
+                    "texto": texto,
+                    "tipo": "image_caption"
+                })
+                texto_parts.append(f"[P{idx}|IMAGE_CAPTION] {texto}")
+                idx += 1
+            # Se nao incluir legendas, simplesmente pula
             continue
 
         estilo = para.style.name if para.style else "Normal"
@@ -2621,6 +2682,206 @@ async def revisao_agente_texto_form(
 
     except Exception as e:
         raise HTTPException(500, f"Erro no agente TEXTO: {str(e)}")
+    finally:
+        os.unlink(tmp_path)
+
+
+@app.post("/revisao/agente-imagem")
+async def revisao_agente_imagem(payload: RevisaoImagemPayload):
+    """
+    Executa o agente de revisao de IMAGENS.
+
+    Analisa as imagens do artigo quanto a relevancia, qualidade,
+    atualizacao de screenshots e acessibilidade (alt text).
+
+    Parametros:
+    - docx_url: URL do documento DOCX (ou docx_base64)
+    - docx_base64: Documento em base64 (ou docx_url)
+    - url_artigo: URL original do artigo (OBRIGATORIO para extrair imagens)
+    - provider: "anthropic" ou "openai" (default: anthropic)
+    - titulo: Titulo do artigo (opcional)
+
+    Retorna:
+    - JSON com sugestoes de revisao de imagens
+    """
+    from datetime import datetime
+
+    if not payload.url_artigo:
+        raise HTTPException(400, "url_artigo e obrigatorio para o agente de imagem")
+
+    try:
+        # Obtem bytes do DOCX
+        docx_bytes = await obter_docx_bytes(payload.docx_url, payload.docx_base64)
+
+        # Salva temporariamente
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+            tmp.write(docx_bytes)
+            tmp.flush()
+            tmp_path = tmp.name
+
+        try:
+            # Extrai texto do DOCX (incluindo legendas para o agente de imagem)
+            conteudo, titulo_extraido = _extrair_texto_para_revisao(tmp_path, incluir_legendas=True)
+            titulo_final = payload.titulo or titulo_extraido
+
+            # Faz scraping do artigo para obter as imagens
+            print(f"📥 Extraindo imagens de: {payload.url_artigo}")
+            with httpx.Client(timeout=30, follow_redirects=True) as http_client:
+                response = http_client.get(payload.url_artigo)
+                response.raise_for_status()
+                html = response.text
+
+            article_data = extract_article_content(html, payload.url_artigo)
+
+            # Filtra apenas itens do tipo "image"
+            imagens = [item for item in article_data.get('content', []) if item.get('type') == 'image']
+            print(f"📸 {len(imagens)} imagens encontradas")
+
+            if not imagens:
+                return {
+                    "tipo": "IMAGEM",
+                    "total_sugestoes": 0,
+                    "revisoes": [],
+                    "mensagem": "Nenhuma imagem encontrada no artigo"
+                }
+
+            # Prepara prompt
+            data_atual = datetime.now().strftime("%d/%m/%Y")
+            system_prompt, user_prompt = formatar_prompt_imagem(
+                conteudo=conteudo,
+                imagens=imagens,
+                titulo=titulo_final,
+                url=payload.url_artigo,
+                data_atual=data_atual
+            )
+
+            # Chama LLM com visao multimodal
+            llm_client = criar_cliente_llm(provider=payload.provider)
+
+            # Anthropic: visao + busca web | OpenAI: apenas visao
+            resposta = llm_client.gerar_resposta_com_imagens_e_busca(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                imagens=imagens
+            )
+
+            revisoes = llm_client.extrair_json(resposta)
+
+            # Garante tipo IMAGEM em todas as revisoes
+            for rev in revisoes:
+                rev["tipo"] = "IMAGEM"
+
+            return {
+                "tipo": "IMAGEM",
+                "total_sugestoes": len(revisoes),
+                "total_imagens": len(imagens),
+                "revisoes": revisoes
+            }
+
+        finally:
+            os.unlink(tmp_path)
+
+    except httpx.HTTPError as e:
+        raise HTTPException(400, f"Erro ao buscar URL do artigo: {str(e)}")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"Erro no agente IMAGEM: {str(e)}")
+
+
+@app.post("/revisao/agente-imagem-form")
+async def revisao_agente_imagem_form(
+    file: UploadFile = File(...),
+    url_artigo: str = Form(...),
+    provider: str = Form("anthropic"),
+    titulo: str = Form("")
+):
+    """
+    Executa o agente de revisao de IMAGENS via upload de arquivo.
+    Ideal para uso com n8n HTTP Request node.
+
+    Parametros:
+    - file: Arquivo DOCX
+    - url_artigo: URL original do artigo (OBRIGATORIO para extrair imagens)
+    - provider: "anthropic" ou "openai" (default: anthropic)
+    - titulo: Titulo do artigo (opcional)
+    """
+    from datetime import datetime
+
+    if not url_artigo:
+        raise HTTPException(400, "url_artigo e obrigatorio para o agente de imagem")
+
+    docx_bytes = await file.read()
+    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+        tmp.write(docx_bytes)
+        tmp.flush()
+        tmp_path = tmp.name
+
+    try:
+        # Extrai texto do DOCX (incluindo legendas para o agente de imagem)
+        conteudo, titulo_extraido = _extrair_texto_para_revisao(tmp_path, incluir_legendas=True)
+        titulo_final = titulo or titulo_extraido
+
+        # Faz scraping do artigo para obter as imagens
+        print(f"📥 Extraindo imagens de: {url_artigo}")
+        with httpx.Client(timeout=30, follow_redirects=True) as http_client:
+            response = http_client.get(url_artigo)
+            response.raise_for_status()
+            html = response.text
+
+        article_data = extract_article_content(html, url_artigo)
+
+        # Filtra apenas itens do tipo "image"
+        imagens = [item for item in article_data.get('content', []) if item.get('type') == 'image']
+        print(f"📸 {len(imagens)} imagens encontradas")
+
+        if not imagens:
+            return {
+                "tipo": "IMAGEM",
+                "total_sugestoes": 0,
+                "revisoes": [],
+                "mensagem": "Nenhuma imagem encontrada no artigo"
+            }
+
+        # Prepara prompt
+        data_atual = datetime.now().strftime("%d/%m/%Y")
+        system_prompt, user_prompt = formatar_prompt_imagem(
+            conteudo=conteudo,
+            imagens=imagens,
+            titulo=titulo_final,
+            url=url_artigo,
+            data_atual=data_atual
+        )
+
+        # Chama LLM com visao multimodal
+        llm_client = criar_cliente_llm(provider=provider)
+
+        # Anthropic: visao + busca web | OpenAI: apenas visao
+        resposta = llm_client.gerar_resposta_com_imagens_e_busca(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            imagens=imagens
+        )
+
+        revisoes = llm_client.extrair_json(resposta)
+
+        # Garante tipo IMAGEM em todas as revisoes
+        for rev in revisoes:
+            rev["tipo"] = "IMAGEM"
+
+        return {
+            "tipo": "IMAGEM",
+            "total_sugestoes": len(revisoes),
+            "total_imagens": len(imagens),
+            "revisoes": revisoes
+        }
+
+    except httpx.HTTPError as e:
+        raise HTTPException(400, f"Erro ao buscar URL do artigo: {str(e)}")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"Erro no agente IMAGEM: {str(e)}")
     finally:
         os.unlink(tmp_path)
 

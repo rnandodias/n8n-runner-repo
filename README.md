@@ -1,6 +1,6 @@
 # Runner Alura - FastAPI + Playwright + LibreOffice
 
-git add -A && git commit -m "Limpeza do código e reconstrução do README" && git push
+git add -A && git commit -m "Adicionando novo agente para revisar as imagens dos artigos" && git push
 
 Servico de automacao para processamento de conteudo, integrado ao n8n via containers Docker.
 
@@ -78,6 +78,8 @@ Usado como sidecar do n8n para automacoes envolvendo extracao de conteudo, gerac
 | `/revisao/agente-seo-form` | POST | Agente SEO via multipart form |
 | `/revisao/agente-tecnico-form` | POST | Agente tecnico via multipart form |
 | `/revisao/agente-texto-form` | POST | Agente texto via multipart form |
+| `/revisao/agente-imagem` | POST | Agente de revisao de imagens (visao multimodal) |
+| `/revisao/agente-imagem-form` | POST | Agente imagem via multipart form |
 
 ### Processamento de Video
 
@@ -99,7 +101,7 @@ Usado como sidecar do n8n para automacoes envolvendo extracao de conteudo, gerac
 
 ## Agentes de Revisao de Artigos
 
-O sistema inclui tres agentes especializados de IA para revisao de artigos:
+O sistema inclui quatro agentes especializados de IA para revisao de artigos:
 
 ### Agente SEO
 - Analisa intencao de busca e resposta do conteudo
@@ -122,6 +124,18 @@ O sistema inclui tres agentes especializados de IA para revisao de artigos:
 - Sugere ajustes de tom e nivel do publico
 - Recomenda listas, tabelas e elementos visuais
 
+### Agente Imagem
+- Analisa relevancia e contexto das imagens
+- Verifica qualidade e legibilidade de screenshots
+- Detecta interfaces desatualizadas (com busca web)
+- Avalia alt text para acessibilidade
+- Identifica textos presos em imagens que deveriam estar no artigo
+- Sugere onde adicionar imagens faltantes
+- Usa visao multimodal (Claude Vision ou GPT-4 Vision)
+
+**Nota:** O agente de imagem requer `url_artigo` para extrair as imagens via scraping.
+Com Anthropic, usa visao + busca web. Com OpenAI, usa apenas visao.
+
 ### Formato de Saida
 
 Todos os agentes retornam JSON estruturado:
@@ -129,7 +143,7 @@ Todos os agentes retornam JSON estruturado:
 ```json
 [
   {
-    "tipo": "SEO|TECNICO|TEXTO",
+    "tipo": "SEO|TECNICO|TEXTO|IMAGEM",
     "acao": "substituir|deletar|inserir|comentario",
     "texto_original": "texto exato encontrado no documento",
     "texto_novo": "texto substituto",
