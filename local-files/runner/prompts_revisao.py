@@ -2,6 +2,7 @@
 Prompts para os agentes de revisao de artigos.
 Cada agente tem um foco especifico: SEO, TECNICO ou TEXTO.
 """
+from datetime import datetime
 
 # =============================================================================
 # FORMATO DE SAIDA COMUM
@@ -306,7 +307,6 @@ def formatar_prompt_tecnico(
     data_atual: str = ""
 ) -> tuple:
     """Retorna (system_prompt, user_prompt) para revisao tecnica."""
-    from datetime import datetime
     if not data_atual:
         data_atual = datetime.now().strftime("%d/%m/%Y")
 

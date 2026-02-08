@@ -11,15 +11,14 @@ import shutil
 import uuid
 import tempfile
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional
 from io import BytesIO
 
 # Third-party
 from unidecode import unidecode
 import unicodedata
-from tqdm import tqdm
 from bs4 import BeautifulSoup, NavigableString
-from urllib.parse import urlencode, urljoin, urlparse
+from urllib.parse import urlencode, urljoin
 import requests
 import httpx
 from openai import OpenAI
@@ -36,7 +35,6 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 from docx import Document
 from docx.shared import Pt, Inches, Cm, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
@@ -422,16 +420,6 @@ def is_decorative_element(element):
             except ValueError:
                 pass
     
-    return False
-
-
-def is_related_articles_section(element):
-    """Verifica se é seção de artigos relacionados."""
-    prev_siblings = element.find_all_previous(['h2', 'h3', 'h4'])
-    for sib in prev_siblings[:3]:
-        text = sib.get_text(strip=True).lower()
-        if any(x in text for x in ['leia também', 'artigos relacionados', 'veja outros artigos']):
-            return True
     return False
 
 

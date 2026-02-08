@@ -1,149 +1,366 @@
-# Runner Playwright para n8n (Deploy automático via GitHub Actions)
+# Runner Alura - FastAPI + Playwright + LibreOffice
 
-## Subindo Alterações
+git add -A && git commit -m "Limpeza do código e reconstrução do README" && git push
 
-git add -A
-git commit -m "Ajustando app.py na tag a"
-git push
+Servico de automacao para processamento de conteudo, integrado ao n8n via containers Docker.
 
-OU
+## Visao Geral
 
-git add -A && git commit -m "Ajuste no endpoit aplicar-comentarios-form para ter como retorno um arquivo com o nome correto" && git push
+Este projeto fornece um runner FastAPI que combina:
+- **Playwright/Chromium** para scraping web e automacao de navegador
+- **LibreOffice UNO** para manipulacao avancada de documentos
+- **Agentes de IA** (Anthropic Claude e OpenAI GPT) para revisao automatizada de artigos
+- **FFmpeg** para processamento de video
+
+Usado como sidecar do n8n para automacoes envolvendo extracao de conteudo, geracao de documentos DOCX, revisao com IA, e processamento de video.
 
 ---
 
-Este repo contém um serviço **runner** (FastAPI + Playwright/Chromium) usado como sidecar do seu **n8n**.
-Deploy: **git push → GitHub Actions → (re)build + up** do runner na sua VPS.
+## Arquitetura
 
-## Estrutura
-
-```bash
-n8n-runner/
-  runner/
-    Dockerfile
-  docker-compose.yml
-local-files/
-  runner/
-    app.py
-  data/
-    instrutores.json (opcional, pode ficar só na VPS)
-.github/workflows/
-  deploy-runner.yml
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                           n8n                                   │
+│                    (orquestrador de workflows)                  │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │ HTTP (runner:8000)
+                           ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      Runner FastAPI                             │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌───────────┐  │
+│  │ Playwright  │ │ LibreOffice │ │  LLM APIs   │ │   FFmpeg  │  │
+│  │ (Chromium)  │ │    (UNO)    │ │Claude/GPT   │ │   Video   │  │
+│  └─────────────┘ └─────────────┘ └─────────────┘ └───────────┘  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-## Pré-requisitos na VPS (uma vez)
+---
 
-- Docker + Docker Compose
-- Pastas:
+## Endpoints
 
-  ```bash
-  sudo mkdir -p /opt/n8n-runner/runner
-  sudo mkdir -p /local-files/{runner,data}
-  ```
+### Utilitarios
 
-- **.env da VPS**: `/opt/n8n-runner/.env`
+| Endpoint | Metodo | Descricao |
+|----------|--------|-----------|
+| `/ping` | GET | Health check do servico |
 
-  ```env
-  ALURA_USER=seu_usuario_alura
-  ALURA_PASS=sua_senha_alura
-  # (HTTPS opcional via Traefik)
-  RUNNER_SUBDOMAIN=runner
-  DOMAIN_NAME=seu-dominio.com.br
-  TRAEFIK_NETWORK=root_default
-  ```
+### Extracao e Conversao de Artigos
 
-  > Use a **mesma rede** do seu Traefik/n8n principal. Já deixamos `root_default` preenchido no compose.
+| Endpoint | Metodo | Descricao |
+|----------|--------|-----------|
+| `/extract-article` | POST | Extrai artigo de URL (scraping Playwright) |
+| `/html-to-docx` | POST | Converte URL de artigo para DOCX binario |
+| `/generate-docx` | POST | Gera DOCX a partir de JSON estruturado |
 
-- (Opcional) `instrutores.json` inicial em `/local-files/data/instrutores.json`:
+### LibreOffice (Manipulacao Avancada)
 
-  ```json
-  [
-    {"nome": "Fulano da Silva", "valor": "123..."},
-    {"nome": "Ciclana Souza",  "valor": "211..."}
-  ]
-  ```
+| Endpoint | Metodo | Descricao |
+|----------|--------|-----------|
+| `/libreoffice/status` | GET | Status do servico LibreOffice UNO |
+| `/libreoffice/extrair-texto` | POST | Extrai texto de DOCX via upload |
+| `/libreoffice/extrair-texto-url` | POST | Extrai texto de DOCX via URL |
+| `/libreoffice/aplicar-revisoes` | POST | Aplica revisoes via LibreOffice |
+| `/libreoffice/aplicar-revisoes-json` | POST | Aplica revisoes JSON via LibreOffice |
+| `/libreoffice/reset` | POST | Reinicia conexao LibreOffice |
 
-## GitHub Actions → VPS
+### Revisao com Agentes de IA
 
-1. Gere uma chave SSH local (ou use uma dedicada):
+| Endpoint | Metodo | Descricao |
+|----------|--------|-----------|
+| `/revisao/extrair-texto` | POST | Extrai texto de DOCX para revisao |
+| `/revisao/aplicar` | POST | Aplica revisoes com Track Changes (OOXML) |
+| `/revisao/aplicar-json` | POST | Aplica revisoes JSON com Track Changes |
+| `/revisao/aplicar-form` | POST | Aplica revisoes via multipart form |
+| `/revisao/aplicar-comentarios-form` | POST | Aplica revisoes como comentarios DOCX |
+| `/revisao/agente-seo` | POST | Agente de revisao SEO/GEO |
+| `/revisao/agente-tecnico` | POST | Agente de revisao tecnica |
+| `/revisao/agente-texto` | POST | Agente de revisao textual/didatica |
+| `/revisao/agente-seo-form` | POST | Agente SEO via multipart form |
+| `/revisao/agente-tecnico-form` | POST | Agente tecnico via multipart form |
+| `/revisao/agente-texto-form` | POST | Agente texto via multipart form |
 
+### Processamento de Video
+
+| Endpoint | Metodo | Descricao |
+|----------|--------|-----------|
+| `/processar_video_urls` | POST | Processa video a partir de URLs |
+| `/processar_video` | POST | Processa video com upload binario |
+| `/processar_video/status` | GET | Status do processamento de video |
+
+### Integracoes Externas
+
+| Endpoint | Metodo | Descricao |
+|----------|--------|-----------|
+| `/pesquisa_mercado_linkedin` | POST | Pesquisa de vagas no LinkedIn |
+| `/cadastrar_curso` | POST | Cadastra curso na plataforma Alura |
+| `/get_transcription_course` | POST | Obtem transcricao de curso Alura |
+
+---
+
+## Agentes de Revisao de Artigos
+
+O sistema inclui tres agentes especializados de IA para revisao de artigos:
+
+### Agente SEO
+- Analisa intencao de busca e resposta do conteudo
+- Avalia distribuicao de palavras-chave (densidade 5-8%)
+- Verifica estrutura de titulos e escaneabilidade
+- Sugere links internos/externos
+- Recomenda CTAs estrategicos
+
+### Agente Tecnico
+- Valida correcao e atualizacao de informacoes
+- Verifica versoes de bibliotecas/frameworks (com busca web)
+- Avalia exemplos de codigo e boas praticas
+- Identifica recursos deprecados ou problemas de seguranca
+- Sugere referencias e evidencias
+
+### Agente Texto
+- Melhora clareza, didatica e fluidez
+- Corrige gramatica e ortografia (PT-BR)
+- Avalia progressao logica e transicoes
+- Sugere ajustes de tom e nivel do publico
+- Recomenda listas, tabelas e elementos visuais
+
+### Formato de Saida
+
+Todos os agentes retornam JSON estruturado:
+
+```json
+[
+  {
+    "tipo": "SEO|TECNICO|TEXTO",
+    "acao": "substituir|deletar|inserir|comentario",
+    "texto_original": "texto exato encontrado no documento",
+    "texto_novo": "texto substituto",
+    "justificativa": "explicacao clara da mudanca"
+  }
+]
+```
+
+---
+
+## Estrutura do Projeto
+
+```
+n8n-runner-repo/
+├── .github/
+│   └── workflows/
+│       └── deploy-runner.yml      # CI/CD para VPS
+├── local-files/
+│   └── runner/
+│       ├── app.py                 # Aplicacao FastAPI principal
+│       ├── llm_client.py          # Cliente unificado LLM (Anthropic/OpenAI)
+│       ├── prompts_revisao.py     # Prompts dos agentes de revisao
+│       └── track_changes.py       # Implementacao OOXML Track Changes
+├── n8n-runner/
+│   ├── docker-compose.yml         # Compose do runner
+│   └── runner/
+│       ├── Dockerfile             # Playwright + FFmpeg + LibreOffice
+│       ├── requirements.txt       # Dependencias Python
+│       └── start.sh               # Script de inicializacao
+├── workflows/
+│   └── *.json                     # Workflows n8n exportados
+├── ENV.EXAMPLE.txt                # Template de variaveis
+└── README.md
+```
+
+---
+
+## Configuracao
+
+### Variaveis de Ambiente
+
+Criar `/opt/n8n-runner/.env` na VPS:
+
+```env
+# Credenciais Alura
+ALURA_USER=seu_usuario
+ALURA_PASS=sua_senha
+
+# Credenciais LinkedIn (opcional)
+LINKEDIN_USER=seu_email
+LINKEDIN_PASS=sua_senha
+
+# APIs de LLM
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+
+# Provider padrao (anthropic ou openai)
+LLM_PROVIDER=anthropic
+
+# Modelo padrao (opcional)
+ANTHROPIC_MODEL=claude-sonnet-4-5-20250929
+OPENAI_MODEL=gpt-4.1
+
+# HTTPS via Traefik (opcional)
+RUNNER_SUBDOMAIN=runner
+DOMAIN_NAME=seu-dominio.com.br
+TRAEFIK_NETWORK=root_default
+```
+
+---
+
+## Deploy
+
+### Pre-requisitos na VPS
+
+1. Docker + Docker Compose instalados
+2. Criar diretorios:
    ```bash
-   ssh-keygen -t ed25519 -C "gh-actions@seu-dominio" -f ~/.ssh/id_ed25519_gh
+   sudo mkdir -p /opt/n8n-runner/runner
+   sudo mkdir -p /local-files/{runner,data}
    ```
 
-   Adicione a **pública** na VPS (usuário com permissão):
+### GitHub Actions (CI/CD automatico)
 
+1. Gerar chave SSH:
    ```bash
-   cat ~/.ssh/id_ed25519_gh.pub | ssh root@SEU_IP "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys"
+   ssh-keygen -t ed25519 -C "gh-actions" -f ~/.ssh/id_ed25519_gh
    ```
 
-2. No GitHub (repo → Settings → Secrets and variables → Actions), crie os **Secrets**:
-   - `VPS_HOST` (IP/host da VPS)
-   - `VPS_PORT` (22, ou sua porta)
-   - `VPS_USER` (ex.: root)
-   - `SSH_PRIVATE_KEY` (conteúdo do `~/.ssh/id_ed25519_gh`)
+2. Adicionar chave publica na VPS:
+   ```bash
+   cat ~/.ssh/id_ed25519_gh.pub | ssh root@VPS_IP "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
+   ```
 
-Ao fazer **push** na **branch `main`** (arquivos em `n8n-runner/**` ou `local-files/**`), o workflow:
+3. Configurar Secrets no GitHub:
+   - `VPS_HOST` - IP/hostname da VPS
+   - `VPS_PORT` - Porta SSH (padrao 22)
+   - `VPS_USER` - Usuario SSH
+   - `SSH_PRIVATE_KEY` - Conteudo da chave privada
 
-- Faz rsync do repositório para a VPS
-- `docker compose build runner`
-- `docker compose up -d runner`
+4. Push para `main` aciona deploy automatico
 
-## Primeira execução manual (opcional)
+### Deploy Manual
 
 ```bash
 cd /opt/n8n-runner
-docker compose --env-file /opt/n8n-runner/.env build runner
-docker compose --env-file /opt/n8n-runner/.env up -d runner
-docker compose --env-file /opt/n8n-runner/.env logs -f runner
+docker compose --env-file .env build runner
+docker compose --env-file .env up -d runner
+docker compose --env-file .env logs -f runner
 ```
 
-## Testes
+---
 
-- Dentro do container do n8n principal:
+## Workflow n8n - Revisao de Artigos
 
-  ```bash
-  docker exec -it $(docker ps --format '{{.Names}}' | grep n8n | head -n1)         sh -lc "apk add --no-cache curl || true; curl -i -m 30 http://runner:8000/ping"
-  ```
+O projeto inclui workflow n8n para revisao automatizada:
 
-- Se publicar HTTPS (Traefik + DNS):
-
-  ```bash
-  curl -i https://runner.seu-dominio.com.br/ping
-  ```
-
-## Uso no n8n
-
-- **Interno**: `POST http://runner:8000/cadastrar_curso`
-- **HTTPS (Traefik)**: `POST https://runner.seu-dominio.com.br/cadastrar_curso`
-
-Body JSON esperado:
-
-```json
-{
-  "nome_curso": "Exemplo",
-  "nome_instrutor": "Fulano da Silva",
-  "tempo_curso": 8
-}
+```
+[Trigger] → [Config] → [HTML to DOCX] → [Agentes IA em paralelo] → [Merge] → [Aplicar Comentarios] → [Output]
+                              ↓
+                      ┌───────┴───────┐
+                      ↓       ↓       ↓
+                   [SEO] [Tecnico] [Texto]
 ```
 
-## O que você ainda precisa preencher
+### Fluxo:
+1. **Input**: URL do artigo + palavras-chave (opcional)
+2. **Conversao**: HTML do artigo vira DOCX
+3. **Revisao**: Tres agentes rodam em paralelo
+4. **Merge**: Combina todas as sugestoes
+5. **Output**: DOCX com comentarios aplicados
 
-- **/opt/n8n-runner/.env** na VPS:
-  - `ALURA_USER`, `ALURA_PASS`
-  - (opcional para HTTPS) `RUNNER_SUBDOMAIN`, `DOMAIN_NAME` (DNS deve apontar para a VPS)
-- **GitHub Secrets**: `SSH_PRIVATE_KEY`, `VPS_HOST`, `VPS_PORT`, `VPS_USER`
-- **instrutores.json**: lista real de instrutores/valores
-- (se quiser traduzir de verdade) implementar `traduzir()` no `app.py`
+### Importar Workflow
 
-## Debug rápido
+1. Acesse n8n → Settings → Import Workflow
+2. Cole o JSON de `workflows/Revisão de Artigo - Agentes Paralelos com SEO.json`
+3. Configure credenciais (Google Drive, se usado)
+
+---
+
+## Uso
+
+### Interno (de dentro do container n8n)
 
 ```bash
-docker compose --env-file /opt/n8n-runner/.env -f /opt/n8n-runner/docker-compose.yml logs -f runner
-docker exec -it $(docker ps --format '{{.Names}}' | grep runner | head -n1) bash
+curl -X POST http://runner:8000/extract-article \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://exemplo.com/artigo"}'
 ```
 
-## Notas
+### HTTPS (com Traefik)
 
-- O runner usa a rede `root_default` (mesma do Traefik/n8n).
-- Não expomos portas no host; o n8n acessa via DNS interno `runner:8000`. Para HTTPS público, habilite as labels no compose e configure DNS.
+```bash
+curl -X POST https://runner.seu-dominio.com.br/html-to-docx \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://exemplo.com/artigo"}'
+```
+
+### Exemplo: Revisao SEO
+
+```bash
+curl -X POST http://runner:8000/revisao/agente-seo-form \
+  -F "file=@artigo.docx" \
+  -F "palavras_chave=python, machine learning, ia" \
+  -F "provider=anthropic"
+```
+
+### Exemplo: Aplicar Comentarios
+
+```bash
+curl -X POST http://runner:8000/revisao/aplicar-comentarios-form \
+  -F "file=@artigo.docx" \
+  -F 'revisoes=[{"tipo":"SEO","acao":"substituir","texto_original":"texto antigo","texto_novo":"texto novo","justificativa":"melhora SEO"}]'
+```
+
+---
+
+## Debug
+
+```bash
+# Logs do container
+docker compose --env-file .env logs -f runner
+
+# Acesso ao container
+docker exec -it $(docker ps --format '{{.Names}}' | grep runner | head -n1) bash
+
+# Testar conectividade (de dentro do n8n)
+docker exec -it $(docker ps --format '{{.Names}}' | grep n8n | head -n1) \
+  sh -lc "curl -i http://runner:8000/ping"
+```
+
+---
+
+## Dependencias Principais
+
+- **FastAPI** - Framework web
+- **Playwright** - Automacao de browser
+- **python-docx** - Geracao de DOCX
+- **python-uno** - LibreOffice UNO bridge
+- **anthropic** - SDK Anthropic Claude
+- **openai** - SDK OpenAI
+- **BeautifulSoup4** - Parsing HTML
+- **FFmpeg** - Processamento de video
+
+---
+
+## Notas Tecnicas
+
+### Track Changes OOXML
+
+O sistema implementa Track Changes nativo OOXML (sem depender de LibreOffice):
+- Manipulacao direta de `document.xml`
+- Suporte a insercoes, delecoes e modificacoes
+- Preservacao de formatacao original
+
+### Comentarios DOCX
+
+Comentarios sao inseridos com:
+- Ranges sobrepostos para multiplos comentarios no mesmo trecho
+- Formatacao visual com emojis por tipo (SEO, TECNICO, TEXTO)
+- Estrutura multi-paragrafo para corpo do comentario
+
+### Busca Web (Agente Tecnico)
+
+O agente tecnico usa `web_search` da Anthropic para verificar:
+- Versoes atuais de bibliotecas/frameworks
+- Documentacao oficial atualizada
+- Validade de informacoes tecnicas
+
+---
+
+## Licenca
+
+Projeto interno Alura.
