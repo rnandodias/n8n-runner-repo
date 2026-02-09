@@ -13,12 +13,14 @@ import httpx
 
 
 # Limite de 5MB para imagens (API Anthropic)
-MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
+# Base64 encoding aumenta o tamanho em ~33%, entao o limite original deve ser ~3.75MB
+MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB (limite da API para base64)
+MAX_IMAGE_SIZE_ORIGINAL = int(MAX_IMAGE_SIZE_BYTES * 0.75)  # ~3.75MB (limite pre-base64)
 
 
 def _verificar_tamanho_imagem_url(url: str) -> bool:
     """
-    Verifica se imagem em URL esta dentro do limite de 5MB.
+    Verifica se imagem em URL esta dentro do limite (~3.75MB original = 5MB base64).
     Usa HEAD request primeiro, fallback para GET parcial.
     Retorna True se OK, False se excede ou falha.
     """
@@ -29,9 +31,10 @@ def _verificar_tamanho_imagem_url(url: str) -> bool:
 
         if content_length:
             size = int(content_length)
-            if size > MAX_IMAGE_SIZE_BYTES:
+            if size > MAX_IMAGE_SIZE_ORIGINAL:
                 size_mb = size / (1024 * 1024)
-                print(f"AVISO: Imagem ignorada via HEAD (excede 5MB: {size_mb:.1f}MB): {url}")
+                estimated_base64_mb = (size * 4 / 3) / (1024 * 1024)
+                print(f"🚫 Imagem ignorada via HEAD ({size_mb:.1f}MB -> ~{estimated_base64_mb:.1f}MB base64): {url}")
                 return False
             return True
 
@@ -41,9 +44,9 @@ def _verificar_tamanho_imagem_url(url: str) -> bool:
             size = 0
             for chunk in response.iter_bytes(chunk_size=1024 * 64):
                 size += len(chunk)
-                if size > MAX_IMAGE_SIZE_BYTES:
+                if size > MAX_IMAGE_SIZE_ORIGINAL:
                     size_mb = size / (1024 * 1024)
-                    print(f"AVISO: Imagem ignorada via GET (excede 5MB: >{size_mb:.1f}MB): {url}")
+                    print(f"🚫 Imagem ignorada via GET (>{size_mb:.1f}MB): {url}")
                     return False
             return True
 
@@ -63,15 +66,18 @@ def _carregar_imagem_como_base64(url: str) -> tuple:
         response.raise_for_status()
 
         size_bytes = len(response.content)
-        print(f"📦 Tamanho da imagem: {size_bytes} bytes ({size_bytes / (1024*1024):.2f} MB)")
+        size_mb = size_bytes / (1024 * 1024)
+        # Base64 aumenta ~33%, entao estimamos o tamanho final
+        estimated_base64_size = int(size_bytes * 4 / 3)
+        estimated_base64_mb = estimated_base64_size / (1024 * 1024)
+        print(f"📦 Tamanho: {size_mb:.2f}MB original -> ~{estimated_base64_mb:.2f}MB base64")
 
-        # Verifica tamanho antes de processar
-        if size_bytes > MAX_IMAGE_SIZE_BYTES:
-            size_mb = size_bytes / (1024 * 1024)
-            print(f"🚫 IGNORANDO IMAGEM (excede 5MB: {size_mb:.2f}MB > 5.00MB): {url}")
+        # Verifica se o tamanho original vai exceder 5MB apos base64
+        if size_bytes > MAX_IMAGE_SIZE_ORIGINAL:
+            print(f"🚫 IGNORANDO (base64 excederia 5MB: {estimated_base64_mb:.2f}MB): {url}")
             return None, None
 
-        print(f"✅ Imagem OK para API: {size_bytes} bytes")
+        print(f"✅ Imagem OK: {size_mb:.2f}MB -> ~{estimated_base64_mb:.2f}MB base64")
 
         content_type = response.headers.get('content-type', 'image/jpeg')
         if ';' in content_type:

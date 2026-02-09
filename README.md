@@ -1,6 +1,6 @@
 # Runner Alura - FastAPI + Playwright + LibreOffice
 
-git add -A && git commit -m "Corrigindo problema no CI/CD (Identificando problema)" && git push
+git add -A && git commit -m "Corrigindo problema na identificação do tamanho da imagem" && git push
 
 Servico de automacao para processamento de conteudo, integrado ao n8n via containers Docker.
 
