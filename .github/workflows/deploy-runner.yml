@@ -50,8 +50,8 @@ jobs:
             chmod 600 /opt/n8n-runner/.env
           "
 
-      - name: Build + up runner
+      - name: Build + restart runner
         run: |
           ssh -p "${{ secrets.VPS_PORT }}" ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "
-            cd /opt/n8n-runner && docker compose --env-file /opt/n8n-runner/.env build runner && docker compose --env-file /opt/n8n-runner/.env up -d runner && docker compose --env-file /opt/n8n-runner/.env ps
+            cd /opt/n8n-runner && docker compose --env-file /opt/n8n-runner/.env build runner && docker compose --env-file /opt/n8n-runner/.env up -d --force-recreate runner && docker compose --env-file /opt/n8n-runner/.env ps
           "
