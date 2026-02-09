@@ -16,6 +16,42 @@ import httpx
 MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
 
 
+def _verificar_tamanho_imagem_url(url: str) -> bool:
+    """
+    Verifica se imagem em URL esta dentro do limite de 5MB.
+    Usa HEAD request primeiro, fallback para GET parcial.
+    Retorna True se OK, False se excede ou falha.
+    """
+    try:
+        # Tenta HEAD primeiro (mais rapido)
+        response = httpx.head(url, timeout=10, follow_redirects=True)
+        content_length = response.headers.get('content-length')
+
+        if content_length:
+            size = int(content_length)
+            if size > MAX_IMAGE_SIZE_BYTES:
+                size_mb = size / (1024 * 1024)
+                print(f"AVISO: Imagem ignorada via HEAD (excede 5MB: {size_mb:.1f}MB): {url}")
+                return False
+            return True
+
+        # Se HEAD nao retornou content-length, faz GET com stream
+        with httpx.stream("GET", url, timeout=30, follow_redirects=True) as response:
+            response.raise_for_status()
+            size = 0
+            for chunk in response.iter_bytes(chunk_size=1024 * 64):
+                size += len(chunk)
+                if size > MAX_IMAGE_SIZE_BYTES:
+                    size_mb = size / (1024 * 1024)
+                    print(f"AVISO: Imagem ignorada via GET (excede 5MB: >{size_mb:.1f}MB): {url}")
+                    return False
+            return True
+
+    except Exception as e:
+        print(f"AVISO: Erro ao verificar tamanho de imagem {url}: {e}")
+        return False
+
+
 def _carregar_imagem_como_base64(url: str) -> tuple:
     """
     Carrega imagem de URL e retorna (base64_data, media_type).
@@ -228,6 +264,9 @@ class AnthropicClient(LLMClient):
 
             # Tenta usar URL direta para CDN da Alura (imagens publicas)
             if 'cdn-wcsm.alura.com.br' in url or 'cdn.alura.com.br' in url:
+                # Verifica tamanho antes de incluir (limite 5MB da API)
+                if not _verificar_tamanho_imagem_url(url):
+                    continue
                 content_blocks.append({
                     "type": "image",
                     "source": {
