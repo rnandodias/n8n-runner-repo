@@ -102,30 +102,40 @@ class LLMClient(ABC):
             return []
 
         resposta = resposta.strip()
+        print(f"🔎 extrair_json: resposta tem {len(resposta)} chars")
 
         # Remove markdown code fences (```json ... ``` ou ``` ... ```)
         if resposta.startswith('```'):
             resposta = re.sub(r'^```\w*\s*\n?', '', resposta)
             resposta = re.sub(r'\n?```\s*$', '', resposta)
             resposta = resposta.strip()
+            print(f"🔎 Apos remover fences: {len(resposta)} chars")
 
         # Extrai o conteudo do array JSON
         json_text = resposta
         json_match = re.search(r'\[[\s\S]*\]', resposta)
         if json_match:
             json_text = json_match.group()
+            print(f"🔎 Array JSON encontrado: {len(json_text)} chars")
+        else:
+            print(f"🔎 Nenhum array JSON encontrado, usando resposta completa")
 
         def _filtrar_dicts(items: list) -> list:
             """Filtra apenas dicts validos da lista."""
-            return [item for item in items if isinstance(item, dict)]
+            filtered = [item for item in items if isinstance(item, dict)]
+            print(f"🔎 _filtrar_dicts: {len(items)} items -> {len(filtered)} dicts")
+            return filtered
 
         # Tentativa 1: parse direto
         try:
             result = json.loads(json_text)
             if isinstance(result, list):
+                print(f"🔎 Parse direto OK: {len(result)} items")
                 return _filtrar_dicts(result)
-        except json.JSONDecodeError:
-            pass
+            else:
+                print(f"🔎 Parse direto: resultado nao e lista, e {type(result).__name__}")
+        except json.JSONDecodeError as e:
+            print(f"🔎 Parse direto falhou: {e}")
 
         # Tentativa 2: truncar no ultimo objeto completo e fechar array
         # (recupera tudo antes do ponto com erro)

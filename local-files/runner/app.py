@@ -2760,21 +2760,33 @@ async def revisao_agente_imagem(payload: RevisaoImagemPayload):
 
             # Anthropic: visao + busca web | OpenAI: apenas visao
             print(f"🤖 Chamando LLM ({payload.provider}) com {len(imagens)} imagens...")
-            resposta = llm_client.gerar_resposta_com_imagens_e_busca(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                imagens=imagens
-            )
 
-            print(f"📝 Resposta recebida ({len(resposta)} chars)")
-            print(f"📝 Preview: {resposta[:500]}...")
+            try:
+                resposta = llm_client.gerar_resposta_com_imagens_e_busca(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    imagens=imagens
+                )
+            except Exception as llm_err:
+                print(f"❌ Erro ao chamar LLM: {type(llm_err).__name__}: {llm_err}")
+                raise
 
-            revisoes = llm_client.extrair_json(resposta)
+            print(f"📝 Resposta recebida ({len(resposta) if resposta else 0} chars)")
+            print(f"📝 Preview: {resposta[:500] if resposta else 'VAZIA'}...")
+
+            try:
+                revisoes = llm_client.extrair_json(resposta)
+            except Exception as json_err:
+                print(f"❌ Erro ao extrair JSON: {type(json_err).__name__}: {json_err}")
+                raise
+
             print(f"✅ {len(revisoes)} revisoes extraidas")
+            print(f"📋 Tipos das revisoes: {[type(r).__name__ for r in revisoes]}")
 
             # Garante tipo IMAGEM em todas as revisoes (filtra apenas dicts validos)
             revisoes_validas = []
-            for rev in revisoes:
+            for i, rev in enumerate(revisoes):
+                print(f"🔍 Revisao {i}: tipo={type(rev).__name__}, preview={str(rev)[:100]}")
                 if isinstance(rev, dict):
                     rev["tipo"] = "IMAGEM"
                     revisoes_validas.append(rev)
@@ -2868,21 +2880,33 @@ async def revisao_agente_imagem_form(
 
         # Anthropic: visao + busca web | OpenAI: apenas visao
         print(f"🤖 Chamando LLM ({provider}) com {len(imagens)} imagens...")
-        resposta = llm_client.gerar_resposta_com_imagens_e_busca(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            imagens=imagens
-        )
 
-        print(f"📝 Resposta recebida ({len(resposta)} chars)")
-        print(f"📝 Preview: {resposta[:500]}...")
+        try:
+            resposta = llm_client.gerar_resposta_com_imagens_e_busca(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                imagens=imagens
+            )
+        except Exception as llm_err:
+            print(f"❌ Erro ao chamar LLM: {type(llm_err).__name__}: {llm_err}")
+            raise
 
-        revisoes = llm_client.extrair_json(resposta)
+        print(f"📝 Resposta recebida ({len(resposta) if resposta else 0} chars)")
+        print(f"📝 Preview: {resposta[:500] if resposta else 'VAZIA'}...")
+
+        try:
+            revisoes = llm_client.extrair_json(resposta)
+        except Exception as json_err:
+            print(f"❌ Erro ao extrair JSON: {type(json_err).__name__}: {json_err}")
+            raise
+
         print(f"✅ {len(revisoes)} revisoes extraidas")
+        print(f"📋 Tipos das revisoes: {[type(r).__name__ for r in revisoes]}")
 
         # Garante tipo IMAGEM em todas as revisoes (filtra apenas dicts validos)
         revisoes_validas = []
-        for rev in revisoes:
+        for i, rev in enumerate(revisoes):
+            print(f"🔍 Revisao {i}: tipo={type(rev).__name__}, preview={str(rev)[:100]}")
             if isinstance(rev, dict):
                 rev["tipo"] = "IMAGEM"
                 revisoes_validas.append(rev)
