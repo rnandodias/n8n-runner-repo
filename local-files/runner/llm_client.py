@@ -12,14 +12,24 @@ from abc import ABC, abstractmethod
 import httpx
 
 
+# Limite de 5MB para imagens (API Anthropic)
+MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
+
+
 def _carregar_imagem_como_base64(url: str) -> tuple:
     """
     Carrega imagem de URL e retorna (base64_data, media_type).
-    Retorna (None, None) se falhar.
+    Retorna (None, None) se falhar ou se imagem exceder 5MB.
     """
     try:
         response = httpx.get(url, timeout=30, follow_redirects=True)
         response.raise_for_status()
+
+        # Verifica tamanho antes de processar
+        if len(response.content) > MAX_IMAGE_SIZE_BYTES:
+            size_mb = len(response.content) / (1024 * 1024)
+            print(f"AVISO: Imagem ignorada (excede 5MB: {size_mb:.1f}MB): {url}")
+            return None, None
 
         content_type = response.headers.get('content-type', 'image/jpeg')
         if ';' in content_type:
