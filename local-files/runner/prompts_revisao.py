@@ -411,14 +411,14 @@ Para revisoes de imagens, use esta estrutura adaptada:
 
 ```json
 [
-  {
+  {{
     "tipo": "IMAGEM",
     "acao": "substituir|deletar|inserir|comentario",
     "texto_original": "descricao ou alt text da imagem sendo referenciada",
     "texto_novo": "novo alt text ou descricao da acao sugerida",
     "justificativa": "explicacao clara da mudanca",
     "imagem_ref": "URL ou indice da imagem (ex: 'Imagem 1', 'Imagem 2')"
-  }
+  }}
 ]
 ```
 
