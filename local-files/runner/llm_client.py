@@ -57,15 +57,21 @@ def _carregar_imagem_como_base64(url: str) -> tuple:
     Carrega imagem de URL e retorna (base64_data, media_type).
     Retorna (None, None) se falhar ou se imagem exceder 5MB.
     """
+    print(f"🔄 _carregar_imagem_como_base64 v2: {url}")
     try:
         response = httpx.get(url, timeout=30, follow_redirects=True)
         response.raise_for_status()
 
+        size_bytes = len(response.content)
+        print(f"📦 Tamanho da imagem: {size_bytes} bytes ({size_bytes / (1024*1024):.2f} MB)")
+
         # Verifica tamanho antes de processar
-        if len(response.content) > MAX_IMAGE_SIZE_BYTES:
-            size_mb = len(response.content) / (1024 * 1024)
-            print(f"AVISO: Imagem ignorada (excede 5MB: {size_mb:.1f}MB): {url}")
+        if size_bytes > MAX_IMAGE_SIZE_BYTES:
+            size_mb = size_bytes / (1024 * 1024)
+            print(f"🚫 IGNORANDO IMAGEM (excede 5MB: {size_mb:.2f}MB > 5.00MB): {url}")
             return None, None
+
+        print(f"✅ Imagem OK para API: {size_bytes} bytes")
 
         content_type = response.headers.get('content-type', 'image/jpeg')
         if ';' in content_type:
