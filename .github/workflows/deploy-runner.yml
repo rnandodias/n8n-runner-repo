@@ -31,8 +31,12 @@ jobs:
 
       - name: Rsync repo → VPS
         run: |
-          rsync -avz --delete -e "ssh -p ${{ secrets.VPS_PORT }}" n8n-runner/ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/n8n-runner/
-          rsync -avz --delete -e "ssh -p ${{ secrets.VPS_PORT }}" local-files/ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/local-files/
+          rsync -avz --delete --exclude='__pycache__' -e "ssh -p ${{ secrets.VPS_PORT }}" n8n-runner/ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/n8n-runner/
+          rsync -avz --delete --exclude='__pycache__' -e "ssh -p ${{ secrets.VPS_PORT }}" local-files/ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/local-files/
+
+      - name: Clean Python cache on VPS
+        run: |
+          ssh -p "${{ secrets.VPS_PORT }}" ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "find /local-files -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true"
 
       - name: Ensure .env on VPS
         run: |
