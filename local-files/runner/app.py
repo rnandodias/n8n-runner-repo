@@ -2803,8 +2803,16 @@ async def revisao_agente_imagem(payload: RevisaoImagemPayload):
         finally:
             os.unlink(tmp_path)
 
+    except httpx.HTTPStatusError as e:
+        # Erro HTTP do servidor upstream (4xx, 5xx)
+        status = e.response.status_code
+        if status >= 500:
+            raise HTTPException(502, f"Erro no servidor do artigo ({status}): {e.request.url}")
+        else:
+            raise HTTPException(400, f"Erro ao buscar URL do artigo ({status}): {e.request.url}")
     except httpx.HTTPError as e:
-        raise HTTPException(400, f"Erro ao buscar URL do artigo: {str(e)}")
+        # Outros erros HTTP (timeout, conexao, etc)
+        raise HTTPException(502, f"Erro de conexao ao buscar artigo: {str(e)}")
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -2920,8 +2928,16 @@ async def revisao_agente_imagem_form(
             "revisoes": revisoes_validas
         }
 
+    except httpx.HTTPStatusError as e:
+        # Erro HTTP do servidor upstream (4xx, 5xx)
+        status = e.response.status_code
+        if status >= 500:
+            raise HTTPException(502, f"Erro no servidor do artigo ({status}): {e.request.url}")
+        else:
+            raise HTTPException(400, f"Erro ao buscar URL do artigo ({status}): {e.request.url}")
     except httpx.HTTPError as e:
-        raise HTTPException(400, f"Erro ao buscar URL do artigo: {str(e)}")
+        # Outros erros HTTP (timeout, conexao, etc)
+        raise HTTPException(502, f"Erro de conexao ao buscar artigo: {str(e)}")
     except Exception as e:
         import traceback
         traceback.print_exc()
