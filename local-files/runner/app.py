@@ -2720,8 +2720,8 @@ async def revisao_agente_imagem(payload: RevisaoImagemPayload):
             tmp_path = tmp.name
 
         try:
-            # Extrai texto do DOCX (incluindo legendas para o agente de imagem)
-            conteudo, titulo_extraido = _extrair_texto_para_revisao(tmp_path, incluir_legendas=True)
+            # Extrai texto do DOCX (sem legendas para manter artigo_context identico aos outros agentes e permitir cache)
+            conteudo, titulo_extraido = _extrair_texto_para_revisao(tmp_path)
             titulo_final = payload.titulo or titulo_extraido
 
             # Faz scraping do artigo para obter as imagens
@@ -2849,8 +2849,8 @@ async def revisao_agente_imagem_form(
         tmp_path = tmp.name
 
     try:
-        # Extrai texto do DOCX (incluindo legendas para o agente de imagem)
-        conteudo, titulo_extraido = _extrair_texto_para_revisao(tmp_path, incluir_legendas=True)
+        # Extrai texto do DOCX (sem legendas para manter artigo_context identico aos outros agentes e permitir cache)
+        conteudo, titulo_extraido = _extrair_texto_para_revisao(tmp_path)
         titulo_final = titulo or titulo_extraido
 
         # Faz scraping do artigo para obter as imagens

@@ -1,6 +1,6 @@
 # Runner Alura - FastAPI + Playwright + LibreOffice
 
-git add -A && git commit -m "Teste com caching nos prompts para tentar reduzir os custos de revisão" && git push
+git add -A && git commit -m "Ajustando os prompts para resolver o problema de caching" && git push
 
 Servico de automacao para processamento de conteudo, integrado ao n8n via containers Docker.
 
