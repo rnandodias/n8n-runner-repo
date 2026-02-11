@@ -239,7 +239,7 @@ class AnthropicClient(LLMClient):
 
     def __init__(self, model: str = None):
         import anthropic
-        self.client = anthropic.Anthropic()
+        self.client = anthropic.Anthropic(max_retries=10)
         self.model = model or os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
 
     def gerar_resposta(self, system_prompt: str, user_prompt: str, max_tokens: int = 32000) -> str:

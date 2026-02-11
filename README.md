@@ -1,6 +1,6 @@
 # Runner Alura - FastAPI + Playwright + LibreOffice
 
-git add -A && git commit -m "Adicionando ao prompt do agente de TEXTO as diretrizes básicas dos textos da Alura" && git push
+git add -A && git commit -m "Resolvendo o problema do rate limit de 30k por minuto da Anthropic" && git push
 
 Servico de automacao para processamento de conteudo, integrado ao n8n via containers Docker.
 
