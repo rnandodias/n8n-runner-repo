@@ -12,6 +12,7 @@ __pycache__/
 
 # Testes locais (não fazem parte do deploy)
 local-tests/
+docker-compose.local.yml
 
 # Workflows n8n (exemplos locais)
 workflows/
