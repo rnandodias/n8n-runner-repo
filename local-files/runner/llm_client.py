@@ -104,20 +104,21 @@ class LLMClient(ABC):
     """Interface base para clientes de LLM."""
 
     @abstractmethod
-    def gerar_resposta(self, system_prompt: str, user_prompt: str, max_tokens: int = 32000) -> str:
+    def gerar_resposta(self, system_prompt: str, user_prompt: str, max_tokens: int = 32000, artigo_context: str = None) -> str:
         """Gera uma resposta do modelo."""
         pass
 
-    def gerar_resposta_com_busca(self, system_prompt: str, user_prompt: str, max_tokens: int = 32000) -> str:
+    def gerar_resposta_com_busca(self, system_prompt: str, user_prompt: str, max_tokens: int = 32000, artigo_context: str = None) -> str:
         """Gera resposta com capacidade de busca web. Fallback para gerar_resposta."""
-        return self.gerar_resposta(system_prompt, user_prompt, max_tokens)
+        return self.gerar_resposta(system_prompt, user_prompt, max_tokens, artigo_context=artigo_context)
 
     def gerar_resposta_com_imagens(
         self,
         system_prompt: str,
         user_prompt: str,
         imagens: list,
-        max_tokens: int = 32000
+        max_tokens: int = 32000,
+        artigo_context: str = None
     ) -> str:
         """
         Gera resposta analisando imagens (visao multimodal).
@@ -127,26 +128,28 @@ class LLMClient(ABC):
             user_prompt: Prompt do usuario
             imagens: Lista de dicts com {url, alt?}
             max_tokens: Limite de tokens
+            artigo_context: Conteudo do artigo para cache
 
         Returns:
             Resposta do modelo
         """
         # Fallback padrao: ignora imagens e usa texto
         print("AVISO: gerar_resposta_com_imagens nao implementado, usando texto apenas")
-        return self.gerar_resposta(system_prompt, user_prompt, max_tokens)
+        return self.gerar_resposta(system_prompt, user_prompt, max_tokens, artigo_context=artigo_context)
 
     def gerar_resposta_com_imagens_e_busca(
         self,
         system_prompt: str,
         user_prompt: str,
         imagens: list,
-        max_tokens: int = 32000
+        max_tokens: int = 32000,
+        artigo_context: str = None
     ) -> str:
         """
         Gera resposta com visao multimodal E busca web.
         Fallback para gerar_resposta_com_imagens.
         """
-        return self.gerar_resposta_com_imagens(system_prompt, user_prompt, imagens, max_tokens)
+        return self.gerar_resposta_com_imagens(system_prompt, user_prompt, imagens, max_tokens, artigo_context=artigo_context)
 
     def extrair_json(self, resposta: str) -> list:
         """
@@ -242,21 +245,30 @@ class AnthropicClient(LLMClient):
         self.client = anthropic.Anthropic(max_retries=10)
         self.model = model or os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
 
-    def gerar_resposta(self, system_prompt: str, user_prompt: str, max_tokens: int = 32000) -> str:
+    def _build_system(self, system_prompt: str, artigo_context: str = None):
+        """Monta system prompt com cache_control quando artigo_context fornecido."""
+        if artigo_context:
+            return [
+                {"type": "text", "text": artigo_context, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": system_prompt}
+            ]
+        return system_prompt
+
+    def gerar_resposta(self, system_prompt: str, user_prompt: str, max_tokens: int = 32000, artigo_context: str = None) -> str:
         with self.client.messages.stream(
             model=self.model,
             max_tokens=max_tokens,
-            system=system_prompt,
+            system=self._build_system(system_prompt, artigo_context),
             messages=[{"role": "user", "content": user_prompt}]
         ) as stream:
             return stream.get_final_text()
 
-    def gerar_resposta_com_busca(self, system_prompt: str, user_prompt: str, max_tokens: int = 32000) -> str:
+    def gerar_resposta_com_busca(self, system_prompt: str, user_prompt: str, max_tokens: int = 32000, artigo_context: str = None) -> str:
         """Gera resposta com web search habilitado (server-side tool da Anthropic)."""
         with self.client.messages.stream(
             model=self.model,
             max_tokens=max_tokens,
-            system=system_prompt,
+            system=self._build_system(system_prompt, artigo_context),
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content": user_prompt}]
         ) as stream:
@@ -308,7 +320,8 @@ class AnthropicClient(LLMClient):
         system_prompt: str,
         user_prompt: str,
         imagens: list,
-        max_tokens: int = 32000
+        max_tokens: int = 32000,
+        artigo_context: str = None
     ) -> str:
         """Gera resposta com visao multimodal (Claude Vision)."""
         # Prepara blocos de imagem
@@ -321,7 +334,7 @@ class AnthropicClient(LLMClient):
         with self.client.messages.stream(
             model=self.model,
             max_tokens=max_tokens,
-            system=system_prompt,
+            system=self._build_system(system_prompt, artigo_context),
             messages=[{"role": "user", "content": content}]
         ) as stream:
             return stream.get_final_text()
@@ -331,7 +344,8 @@ class AnthropicClient(LLMClient):
         system_prompt: str,
         user_prompt: str,
         imagens: list,
-        max_tokens: int = 32000
+        max_tokens: int = 32000,
+        artigo_context: str = None
     ) -> str:
         """Gera resposta com visao multimodal E busca web (Claude Vision + Web Search)."""
         # Prepara blocos de imagem
@@ -344,7 +358,7 @@ class AnthropicClient(LLMClient):
         with self.client.messages.stream(
             model=self.model,
             max_tokens=max_tokens,
-            system=system_prompt,
+            system=self._build_system(system_prompt, artigo_context),
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content": content}]
         ) as stream:
@@ -359,12 +373,18 @@ class OpenAIClient(LLMClient):
         self.client = OpenAI()
         self.model = model or os.getenv("OPENAI_MODEL", "gpt-4.1")
 
-    def gerar_resposta(self, system_prompt: str, user_prompt: str, max_tokens: int = 32000) -> str:
+    def _build_system(self, system_prompt: str, artigo_context: str = None) -> str:
+        """Monta system prompt com artigo_context como prefixo (cache automatico da OpenAI)."""
+        if artigo_context:
+            return f"{artigo_context}\n\n---\n\n{system_prompt}"
+        return system_prompt
+
+    def gerar_resposta(self, system_prompt: str, user_prompt: str, max_tokens: int = 32000, artigo_context: str = None) -> str:
         response = self.client.chat.completions.create(
             model=self.model,
             max_completion_tokens=max_tokens,
             messages=[
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": self._build_system(system_prompt, artigo_context)},
                 {"role": "user", "content": user_prompt}
             ]
         )
@@ -408,7 +428,8 @@ class OpenAIClient(LLMClient):
         system_prompt: str,
         user_prompt: str,
         imagens: list,
-        max_tokens: int = 32000
+        max_tokens: int = 32000,
+        artigo_context: str = None
     ) -> str:
         """Gera resposta com visao multimodal (GPT-4 Vision)."""
         # Prepara conteudo: texto + imagens
@@ -421,7 +442,7 @@ class OpenAIClient(LLMClient):
             model=self.model,
             max_completion_tokens=max_tokens,
             messages=[
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": self._build_system(system_prompt, artigo_context)},
                 {"role": "user", "content": user_content}
             ]
         )
@@ -432,14 +453,15 @@ class OpenAIClient(LLMClient):
         system_prompt: str,
         user_prompt: str,
         imagens: list,
-        max_tokens: int = 32000
+        max_tokens: int = 32000,
+        artigo_context: str = None
     ) -> str:
         """
         Gera resposta com visao multimodal.
         AVISO: OpenAI nao tem busca web integrada como Anthropic.
         """
         print("AVISO: OpenAI nao suporta busca web integrada. Usando apenas visao.")
-        return self.gerar_resposta_com_imagens(system_prompt, user_prompt, imagens, max_tokens)
+        return self.gerar_resposta_com_imagens(system_prompt, user_prompt, imagens, max_tokens, artigo_context=artigo_context)
 
 
 def criar_cliente_llm(provider: str = None, model: str = None) -> LLMClient:

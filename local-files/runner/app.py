@@ -2336,7 +2336,7 @@ async def revisao_agente_seo(payload: RevisaoAgentPayload):
         titulo = payload.titulo or titulo_extraido
 
         # Formata prompts
-        system_prompt, user_prompt = formatar_prompt_seo(
+        system_prompt, user_prompt, artigo_context = formatar_prompt_seo(
             conteudo=conteudo,
             titulo=titulo,
             url=payload.url_artigo or "",
@@ -2345,7 +2345,7 @@ async def revisao_agente_seo(payload: RevisaoAgentPayload):
 
         # Chama LLM
         llm_client = criar_cliente_llm(provider=payload.provider)
-        resposta = llm_client.gerar_resposta(system_prompt, user_prompt)
+        resposta = llm_client.gerar_resposta(system_prompt, user_prompt, artigo_context=artigo_context)
         revisoes = llm_client.extrair_json(resposta)
 
         # Garante tipo SEO
@@ -2405,7 +2405,7 @@ async def revisao_agente_tecnico(payload: RevisaoAgentPayload):
         titulo = payload.titulo or titulo_extraido
 
         # Formata prompts
-        system_prompt, user_prompt = formatar_prompt_tecnico(
+        system_prompt, user_prompt, artigo_context = formatar_prompt_tecnico(
             conteudo=conteudo,
             titulo=titulo,
             url=payload.url_artigo or "",
@@ -2414,7 +2414,7 @@ async def revisao_agente_tecnico(payload: RevisaoAgentPayload):
 
         # Chama LLM (com busca web quando disponivel)
         llm_client = criar_cliente_llm(provider=payload.provider)
-        resposta = llm_client.gerar_resposta_com_busca(system_prompt, user_prompt)
+        resposta = llm_client.gerar_resposta_com_busca(system_prompt, user_prompt, artigo_context=artigo_context)
         revisoes = llm_client.extrair_json(resposta)
 
         # Garante tipo TECNICO
@@ -2473,7 +2473,7 @@ async def revisao_agente_texto(payload: RevisaoAgentPayload):
         titulo = payload.titulo or titulo_extraido
 
         # Formata prompts
-        system_prompt, user_prompt = formatar_prompt_texto(
+        system_prompt, user_prompt, artigo_context = formatar_prompt_texto(
             conteudo=conteudo,
             titulo=titulo,
             url=payload.url_artigo or ""
@@ -2481,7 +2481,7 @@ async def revisao_agente_texto(payload: RevisaoAgentPayload):
 
         # Chama LLM
         llm_client = criar_cliente_llm(provider=payload.provider)
-        resposta = llm_client.gerar_resposta(system_prompt, user_prompt)
+        resposta = llm_client.gerar_resposta(system_prompt, user_prompt, artigo_context=artigo_context)
         revisoes = llm_client.extrair_json(resposta)
 
         # Garante tipo TEXTO
@@ -2560,7 +2560,7 @@ async def revisao_agente_seo_form(
                 palavras_formatadas = "\n".join([f"- {kw}" for kw in keywords])
 
         # Formata prompts
-        system_prompt, user_prompt = formatar_prompt_seo(
+        system_prompt, user_prompt, artigo_context = formatar_prompt_seo(
             conteudo=conteudo,
             titulo=titulo_final,
             url=url_artigo,
@@ -2570,7 +2570,7 @@ async def revisao_agente_seo_form(
 
         # Chama LLM
         llm_client = criar_cliente_llm(provider=provider)
-        resposta = llm_client.gerar_resposta(system_prompt, user_prompt)
+        resposta = llm_client.gerar_resposta(system_prompt, user_prompt, artigo_context=artigo_context)
         revisoes = llm_client.extrair_json(resposta)
 
         for rev in revisoes:
@@ -2614,7 +2614,7 @@ async def revisao_agente_tecnico_form(
         conteudo, titulo_extraido = _extrair_texto_para_revisao(tmp_path)
         titulo_final = titulo or titulo_extraido
 
-        system_prompt, user_prompt = formatar_prompt_tecnico(
+        system_prompt, user_prompt, artigo_context = formatar_prompt_tecnico(
             conteudo=conteudo,
             titulo=titulo_final,
             url=url_artigo,
@@ -2622,7 +2622,7 @@ async def revisao_agente_tecnico_form(
         )
 
         llm_client = criar_cliente_llm(provider=provider)
-        resposta = llm_client.gerar_resposta_com_busca(system_prompt, user_prompt)
+        resposta = llm_client.gerar_resposta_com_busca(system_prompt, user_prompt, artigo_context=artigo_context)
         revisoes = llm_client.extrair_json(resposta)
 
         for rev in revisoes:
@@ -2661,14 +2661,14 @@ async def revisao_agente_texto_form(
         conteudo, titulo_extraido = _extrair_texto_para_revisao(tmp_path)
         titulo_final = titulo or titulo_extraido
 
-        system_prompt, user_prompt = formatar_prompt_texto(
+        system_prompt, user_prompt, artigo_context = formatar_prompt_texto(
             conteudo=conteudo,
             titulo=titulo_final,
             url=url_artigo
         )
 
         llm_client = criar_cliente_llm(provider=provider)
-        resposta = llm_client.gerar_resposta(system_prompt, user_prompt)
+        resposta = llm_client.gerar_resposta(system_prompt, user_prompt, artigo_context=artigo_context)
         revisoes = llm_client.extrair_json(resposta)
 
         for rev in revisoes:
@@ -2747,7 +2747,7 @@ async def revisao_agente_imagem(payload: RevisaoImagemPayload):
 
             # Prepara prompt
             data_atual = datetime.now().strftime("%d/%m/%Y")
-            system_prompt, user_prompt = formatar_prompt_imagem(
+            system_prompt, user_prompt, artigo_context = formatar_prompt_imagem(
                 conteudo=conteudo,
                 imagens=imagens,
                 titulo=titulo_final,
@@ -2765,7 +2765,8 @@ async def revisao_agente_imagem(payload: RevisaoImagemPayload):
                 resposta = llm_client.gerar_resposta_com_imagens_e_busca(
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
-                    imagens=imagens
+                    imagens=imagens,
+                    artigo_context=artigo_context
                 )
             except Exception as llm_err:
                 print(f"❌ Erro ao chamar LLM: {type(llm_err).__name__}: {llm_err}")
@@ -2875,7 +2876,7 @@ async def revisao_agente_imagem_form(
 
         # Prepara prompt
         data_atual = datetime.now().strftime("%d/%m/%Y")
-        system_prompt, user_prompt = formatar_prompt_imagem(
+        system_prompt, user_prompt, artigo_context = formatar_prompt_imagem(
             conteudo=conteudo,
             imagens=imagens,
             titulo=titulo_final,
@@ -2893,7 +2894,8 @@ async def revisao_agente_imagem_form(
             resposta = llm_client.gerar_resposta_com_imagens_e_busca(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
-                imagens=imagens
+                imagens=imagens,
+                artigo_context=artigo_context
             )
         except Exception as llm_err:
             print(f"❌ Erro ao chamar LLM: {type(llm_err).__name__}: {llm_err}")

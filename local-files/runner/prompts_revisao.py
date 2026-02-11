@@ -8,6 +8,19 @@ from datetime import datetime
 # FORMATO DE SAIDA COMUM
 # =============================================================================
 
+# =============================================================================
+# CONTEXTO DO ARTIGO (compartilhado entre agentes para cache de tokens)
+# =============================================================================
+
+ARTIGO_CONTEXT_TEMPLATE = """## ARTIGO PARA REVISAO
+
+**Titulo:** {titulo}
+**URL:** {url}
+
+### Conteudo:
+
+{conteudo}"""
+
 FORMATO_SAIDA = """
 ## FORMATO DE SAIDA OBRIGATORIO
 
@@ -96,20 +109,9 @@ SEO_USER_PROMPT_TEMPLATE = """## GUIA DE SEO DA EMPRESA
 
 ---
 
-## ARTIGO PARA REVISAO
-
-**Titulo:** {titulo}
-**URL:** {url}
-
-### Conteudo:
-
-{conteudo}
-
----
-
 ## TAREFA
 
-Analise o artigo acima seguindo o guia de SEO fornecido.
+Analise o artigo fornecido no contexto seguindo o guia de SEO fornecido.
 
 ### Prioridades:
 1. Identifique problemas de SEO e sugira correcoes especificas
@@ -170,21 +172,11 @@ NAO confie apenas no seu conhecimento pre-treinado para informacoes que mudam co
 - Quando pesquisar na web, mencione a fonte (urls, referencias, bibliografias, citacoes etc.) na justificativa da revisao (ex: "Segundo a documentacao oficial do React...")
 """
 
-TECNICO_USER_PROMPT_TEMPLATE = """## ARTIGO PARA REVISAO TECNICA
-
-**Titulo:** {titulo}
-**URL:** {url}
-**Data de publicacao:** {data_publicacao}
-
-### Conteudo:
-
-{conteudo}
-
----
+TECNICO_USER_PROMPT_TEMPLATE = """**Data de publicacao:** {data_publicacao}
 
 ## TAREFA
 
-Analise o artigo acima do ponto de vista tecnico.
+Analise o artigo fornecido no contexto do ponto de vista tecnico.
 Verifique se as informacoes estao corretas e atualizadas para {data_atual}.
 
 Considere:
@@ -269,20 +261,9 @@ Seu objetivo e melhorar clareza, didatica, fluidez, tom e qualidade de escrita (
 - Melhore a legibilidade sem descaracterizar o texto original
 """
 
-TEXTO_USER_PROMPT_TEMPLATE = """## ARTIGO PARA REVISAO TEXTUAL
+TEXTO_USER_PROMPT_TEMPLATE = """## TAREFA
 
-**Titulo:** {titulo}
-**URL:** {url}
-
-### Conteudo:
-
-{conteudo}
-
----
-
-## TAREFA
-
-Analise o artigo acima do ponto de vista textual e didatico.
+Analise o artigo fornecido no contexto do ponto de vista textual e didatico.
 Sugira melhorias para clareza, gramatica e didatica.
 
 Considere:
@@ -305,16 +286,18 @@ def formatar_prompt_seo(
     guia_seo: str = "Use boas praticas gerais de SEO para conteudo tecnico.",
     palavras_chave: str = "Nenhuma palavra-chave especifica fornecida. Use seu conhecimento de SEO."
 ) -> tuple:
-    """Retorna (system_prompt, user_prompt) para revisao SEO."""
+    """Retorna (system_prompt, user_prompt, artigo_context) para revisao SEO."""
+    artigo_context = ARTIGO_CONTEXT_TEMPLATE.format(
+        titulo=titulo,
+        url=url,
+        conteudo=conteudo
+    )
     user_prompt = SEO_USER_PROMPT_TEMPLATE.format(
         guia_seo=guia_seo,
         palavras_chave=palavras_chave,
-        titulo=titulo,
-        url=url,
-        conteudo=conteudo,
         formato_saida=FORMATO_SAIDA
     )
-    return SEO_SYSTEM_PROMPT, user_prompt
+    return SEO_SYSTEM_PROMPT, user_prompt, artigo_context
 
 
 def formatar_prompt_tecnico(
@@ -324,20 +307,22 @@ def formatar_prompt_tecnico(
     data_publicacao: str = "",
     data_atual: str = ""
 ) -> tuple:
-    """Retorna (system_prompt, user_prompt) para revisao tecnica."""
+    """Retorna (system_prompt, user_prompt, artigo_context) para revisao tecnica."""
     if not data_atual:
         data_atual = datetime.now().strftime("%d/%m/%Y")
 
-    system_prompt = TECNICO_SYSTEM_PROMPT.format(data_atual=data_atual)
-    user_prompt = TECNICO_USER_PROMPT_TEMPLATE.format(
+    artigo_context = ARTIGO_CONTEXT_TEMPLATE.format(
         titulo=titulo,
         url=url,
+        conteudo=conteudo
+    )
+    system_prompt = TECNICO_SYSTEM_PROMPT.format(data_atual=data_atual)
+    user_prompt = TECNICO_USER_PROMPT_TEMPLATE.format(
         data_publicacao=data_publicacao or "Nao informada",
-        conteudo=conteudo,
         data_atual=data_atual,
         formato_saida=FORMATO_SAIDA
     )
-    return system_prompt, user_prompt
+    return system_prompt, user_prompt, artigo_context
 
 
 def formatar_prompt_texto(
@@ -345,14 +330,16 @@ def formatar_prompt_texto(
     titulo: str = "",
     url: str = ""
 ) -> tuple:
-    """Retorna (system_prompt, user_prompt) para revisao textual."""
-    user_prompt = TEXTO_USER_PROMPT_TEMPLATE.format(
+    """Retorna (system_prompt, user_prompt, artigo_context) para revisao textual."""
+    artigo_context = ARTIGO_CONTEXT_TEMPLATE.format(
         titulo=titulo,
         url=url,
-        conteudo=conteudo,
+        conteudo=conteudo
+    )
+    user_prompt = TEXTO_USER_PROMPT_TEMPLATE.format(
         formato_saida=FORMATO_SAIDA
     )
-    return TEXTO_SYSTEM_PROMPT, user_prompt
+    return TEXTO_SYSTEM_PROMPT, user_prompt, artigo_context
 
 
 # =============================================================================
@@ -453,18 +440,7 @@ Para revisoes de imagens, use esta estrutura adaptada:
 - Quando pesquisar na web para verificar interfaces, mencione a fonte na justificativa
 """
 
-IMAGEM_USER_PROMPT_TEMPLATE = """## ARTIGO PARA REVISAO DE IMAGENS
-
-**Titulo:** {titulo}
-**URL:** {url}
-
-### Texto do artigo (contexto):
-
-{conteudo}
-
----
-
-### Imagens do artigo:
+IMAGEM_USER_PROMPT_TEMPLATE = """### Imagens do artigo:
 
 {imagens}
 
@@ -472,7 +448,7 @@ IMAGEM_USER_PROMPT_TEMPLATE = """## ARTIGO PARA REVISAO DE IMAGENS
 
 ## TAREFA
 
-Analise as imagens do artigo acima.
+Analise as imagens do artigo fornecido no contexto.
 Avalie cada imagem quanto a relevancia, qualidade, atualizacao e acessibilidade.
 
 Considere:
@@ -493,7 +469,7 @@ def formatar_prompt_imagem(
     data_atual: str = ""
 ) -> tuple:
     """
-    Retorna (system_prompt, user_prompt) para revisao de imagens.
+    Retorna (system_prompt, user_prompt, artigo_context) para revisao de imagens.
 
     Args:
         conteudo: Texto extraido do artigo
@@ -504,6 +480,12 @@ def formatar_prompt_imagem(
     """
     if not data_atual:
         data_atual = datetime.now().strftime("%d/%m/%Y")
+
+    artigo_context = ARTIGO_CONTEXT_TEMPLATE.format(
+        titulo=titulo,
+        url=url,
+        conteudo=conteudo
+    )
 
     # Formata lista de imagens para o prompt
     imagens_texto = []
@@ -523,11 +505,8 @@ def formatar_prompt_imagem(
 
     system_prompt = IMAGEM_SYSTEM_PROMPT.format(data_atual=data_atual)
     user_prompt = IMAGEM_USER_PROMPT_TEMPLATE.format(
-        titulo=titulo,
-        url=url,
-        conteudo=conteudo,
         imagens=imagens_formatadas,
         data_atual=data_atual
     )
 
-    return system_prompt, user_prompt
+    return system_prompt, user_prompt, artigo_context
