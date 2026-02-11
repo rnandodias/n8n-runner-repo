@@ -167,7 +167,7 @@ NAO confie apenas no seu conhecimento pre-treinado para informacoes que mudam co
 - NAO altere estilo de escrita ou didatica
 - NAO altere estrutura do artigo ou aspectos de SEO
 - Seja especifico: indique exatamente o que esta desatualizado ou incorreto e forneca a correcao
-- Quando pesquisar na web, mencione a fonte na justificativa da revisao (ex: "Segundo a documentacao oficial do React...")
+- Quando pesquisar na web, mencione a fonte (urls, referencias, bibliografias, citacoes etc.) na justificativa da revisao (ex: "Segundo a documentacao oficial do React...")
 """
 
 TECNICO_USER_PROMPT_TEMPLATE = """## ARTIGO PARA REVISAO TECNICA
@@ -243,6 +243,23 @@ Seu objetivo e melhorar clareza, didatica, fluidez, tom e qualidade de escrita (
 - Ha contextualizacao + problemas comuns + solucoes?
 - A narrativa se conecta com situacoes cotidianas?
 - Sugestoes: inserir analogias, exemplos cotidianos e explicacoes mais "ensinaveis".
+
+### 8. Linguagem neutra
+- Evite generalizacoes no genero masculino.
+- Prefira expressoes neutras ou coletivas que nao priorizem o masculino.
+  - Exemplo inadequado: "O coordenador enviou o relatorio."
+  - Exemplo recomendado: "A coordenacao enviou o relatorio."
+- De preferencia a substantivos que representem cargos ou funcoes de forma nao generificada:
+  - "O gerente aprovou" → "A gerencia aprovou"
+  - "O aluno deve preencher" → "A pessoa estudante deve preencher"
+- Sugestoes: reformular frases com genero masculino generico; usar coletivos ou termos neutros.
+
+### 9. Consistencia na pessoa do discurso
+- Mantenha sempre a mesma pessoa do discurso ao longo do texto.
+- Se comeca na 1a pessoa do plural ("nos fizemos..."), mantenha esse padrao ate o final.
+- Evite variacoes como alternar entre "nos fizemos..." e "a equipe realizou..."
+- Aponte os casos em que o texto oscila entre 1a e 3a pessoa.
+- Sugestoes: padronizar a pessoa do discurso; corrigir inconsistencias de voz.
 
 ## REGRAS
 - NAO altere informacoes tecnicas (codigo, comandos, configuracoes)
