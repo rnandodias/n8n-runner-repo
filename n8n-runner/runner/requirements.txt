@@ -14,3 +14,4 @@ python-docx
 httpx
 Pillow
 defusedxml
+cairosvg

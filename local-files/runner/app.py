@@ -934,6 +934,7 @@ def convert_image_for_docx(image_bytes: Optional[BytesIO]) -> Optional[BytesIO]:
     """
     Converte imagem para formato compativel com python-docx.
 
+    - SVG -> PNG (via cairosvg)
     - WEBP animado -> GIF (preserva animacao)
     - WEBP estatico -> PNG
     - Outros formatos nao suportados -> PNG
@@ -943,6 +944,24 @@ def convert_image_for_docx(image_bytes: Optional[BytesIO]) -> Optional[BytesIO]:
         return None
 
     SUPPORTED_FORMATS = {'PNG', 'JPEG', 'GIF', 'BMP', 'TIFF', 'JPG'}
+
+    # Detecta SVG pelo conteudo antes de tentar abrir com PIL (PIL nao suporta SVG)
+    try:
+        image_bytes.seek(0)
+        raw = image_bytes.read(200)
+        image_bytes.seek(0)
+        if b'<svg' in raw or b'<?xml' in raw[:10]:
+            try:
+                import cairosvg
+                image_bytes.seek(0)
+                png_bytes = cairosvg.svg2png(file_obj=image_bytes)
+                print(f"  [CONV] SVG -> PNG (cairosvg)")
+                return BytesIO(png_bytes)
+            except Exception as e:
+                print(f"  [ERRO] Conversao SVG->PNG: {e}")
+                return None
+    except Exception:
+        image_bytes.seek(0)
 
     try:
         image_bytes.seek(0)

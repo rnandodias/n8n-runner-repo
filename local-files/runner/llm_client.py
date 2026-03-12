@@ -83,6 +83,19 @@ def _carregar_imagem_como_base64(url: str) -> tuple:
         if ';' in content_type:
             content_type = content_type.split(';')[0].strip()
 
+        # SVG: rasteriza para PNG antes de enviar (APIs nao suportam SVG)
+        if content_type == 'image/svg+xml' or url.lower().endswith('.svg'):
+            try:
+                import cairosvg
+                print(f"🔄 Rasterizando SVG -> PNG (cairosvg): {url}")
+                png_bytes = cairosvg.svg2png(bytestring=response.content)
+                base64_data = base64.b64encode(png_bytes).decode('utf-8')
+                print(f"✅ SVG rasterizado: {len(png_bytes) / (1024*1024):.2f}MB PNG")
+                return base64_data, 'image/png'
+            except Exception as e:
+                print(f"⚠️ Falha ao rasterizar SVG, ignorando: {e}")
+                return None, None
+
         # Mapeia content-type para media_type valido
         media_type_map = {
             'image/jpeg': 'image/jpeg',
@@ -91,7 +104,10 @@ def _carregar_imagem_como_base64(url: str) -> tuple:
             'image/gif': 'image/gif',
             'image/webp': 'image/webp',
         }
-        media_type = media_type_map.get(content_type, 'image/jpeg')
+        media_type = media_type_map.get(content_type)
+        if not media_type:
+            print(f"⚠️ IGNORANDO formato nao suportado ({content_type}): {url}")
+            return None, None
 
         base64_data = base64.b64encode(response.content).decode('utf-8')
         return base64_data, media_type
