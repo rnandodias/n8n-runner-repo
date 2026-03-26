@@ -4,18 +4,22 @@ Permite alternar entre provedores via configuracao.
 Suporta texto, busca web e visao multimodal.
 """
 import base64
+import io
 import json
 import os
 import re
 from abc import ABC, abstractmethod
 
 import httpx
+from PIL import Image as PILImage
 
 
 # Limite de 5MB para imagens (API Anthropic)
 # Base64 encoding aumenta o tamanho em ~33%, entao o limite original deve ser ~3.75MB
 MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB (limite da API para base64)
 MAX_IMAGE_SIZE_ORIGINAL = int(MAX_IMAGE_SIZE_BYTES * 0.75)  # ~3.75MB (limite pre-base64)
+# Limite de dimensao para requisicoes com multiplas imagens (API Anthropic)
+MAX_IMAGE_DIMENSION = 2000  # pixels
 
 
 def _verificar_tamanho_imagem_url(url: str) -> bool:
@@ -109,7 +113,24 @@ def _carregar_imagem_como_base64(url: str) -> tuple:
             print(f"⚠️ IGNORANDO formato nao suportado ({content_type}): {url}")
             return None, None
 
-        base64_data = base64.b64encode(response.content).decode('utf-8')
+        image_bytes = response.content
+        # Redimensiona se alguma dimensao exceder o limite para multiplas imagens
+        try:
+            img = PILImage.open(io.BytesIO(image_bytes))
+            w, h = img.size
+            if w > MAX_IMAGE_DIMENSION or h > MAX_IMAGE_DIMENSION:
+                scale = MAX_IMAGE_DIMENSION / max(w, h)
+                new_w, new_h = int(w * scale), int(h * scale)
+                print(f"📐 Redimensionando imagem {w}x{h} -> {new_w}x{new_h}: {url}")
+                img = img.resize((new_w, new_h), PILImage.LANCZOS)
+                buf = io.BytesIO()
+                save_format = 'PNG' if media_type == 'image/png' else 'JPEG'
+                img.save(buf, format=save_format)
+                image_bytes = buf.getvalue()
+        except Exception as resize_err:
+            print(f"⚠️ Falha ao redimensionar imagem, usando original: {resize_err}")
+
+        base64_data = base64.b64encode(image_bytes).decode('utf-8')
         return base64_data, media_type
     except Exception as e:
         print(f"Erro ao carregar imagem {url}: {e}")

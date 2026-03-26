@@ -1,6 +1,6 @@
 # Runner Alura - FastAPI + Playwright + LibreOffice
 
-git add -A && git commit -m "Resolvendo o problema de aceitar iamgem SVG pelo agente de imagem" && git push
+git add -A && git commit -m "Resolvendo o problema de aceitar iamgem SVG pelo agente de imagem" && git push origin main
 
 Servico de automacao para processamento de conteudo, integrado ao n8n via containers Docker.
 
