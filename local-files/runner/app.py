@@ -365,7 +365,12 @@ def is_banner_or_promotional(element):
             return True
         if 'banner' in alt:
             return True
-    
+        # Imagens de CTA HubSpot (ex: no-cache.hubspot.com/cta/default/...)
+        if 'hubspot.com/cta/' in src:
+            return True
+        if element.find_parent(lambda tag: tag.name == 'span' and 'hs-cta-wrapper' in tag.get('class', [])):
+            return True
+
     return False
 
 
