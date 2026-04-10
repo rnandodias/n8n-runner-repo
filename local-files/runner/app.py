@@ -639,6 +639,11 @@ def extract_article_content(html: str, base_url: str) -> dict:
     
     for tag in soup.find_all(['script', 'style', 'noscript', 'svg', 'iframe']):
         tag.decompose()
+
+    # Remove seções de footer implementadas como <section class="footer"> (ex: Alura Empresas)
+    # A tag <footer> já é tratada pelo is_site_chrome; aqui cobrimos o padrão CSS-only
+    for tag in soup.find_all('section', class_='footer'):
+        tag.decompose()
     
     metadata = {
         'title': None,
