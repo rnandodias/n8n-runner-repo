@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 
 import httpx
 from PIL import Image as PILImage
+from urllib.parse import urlparse
 
 
 # Limite de 5MB para imagens (API Anthropic)
@@ -20,6 +21,20 @@ MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB (limite da API para base64)
 MAX_IMAGE_SIZE_ORIGINAL = int(MAX_IMAGE_SIZE_BYTES * 0.75)  # ~3.75MB (limite pre-base64)
 # Limite de dimensao para requisicoes com multiplas imagens (API Anthropic)
 MAX_IMAGE_DIMENSION = 2000  # pixels
+
+
+def _e_url_cdn_publica(url: str) -> bool:
+    """
+    Verifica se a URL aponta para o CDN publico da Alura, comparando o hostname
+    real (nao substring). URLs como https://www.alura.com.br/_next/image?url=...
+    contem o dominio do CDN no query string, mas sao servidas por www.alura.com.br,
+    cujo robots.txt bloqueia /_next/ e faz a API da Anthropic recusar a imagem.
+    """
+    try:
+        host = (urlparse(url).hostname or '').lower()
+    except Exception:
+        return False
+    return host in ('cdn-wcsm.alura.com.br', 'cdn.alura.com.br')
 
 
 def _verificar_tamanho_imagem_url(url: str) -> bool:
@@ -324,7 +339,7 @@ class AnthropicClient(LLMClient):
                 continue
 
             # Tenta usar URL direta para CDN da Alura (imagens publicas)
-            if 'cdn-wcsm.alura.com.br' in url or 'cdn.alura.com.br' in url:
+            if _e_url_cdn_publica(url):
                 # Verifica tamanho antes de incluir (limite 5MB da API)
                 if not _verificar_tamanho_imagem_url(url):
                     continue

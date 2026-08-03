@@ -18,7 +18,7 @@ from io import BytesIO
 from unidecode import unidecode
 import unicodedata
 from bs4 import BeautifulSoup, NavigableString
-from urllib.parse import urlencode, urljoin
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 import requests
 import httpx
 from openai import OpenAI
@@ -819,7 +819,8 @@ def extract_article_content(html: str, base_url: str) -> dict:
             
             if not src.startswith('http'):
                 src = urljoin(base_url, src)
-            
+            src = desembrulhar_url_imagem(src)
+
             alt = element.get('alt', '')
             width = element.get('width')
             height = element.get('height')
@@ -852,7 +853,8 @@ def extract_article_content(html: str, base_url: str) -> dict:
                 
                 if not src.startswith('http'):
                     src = urljoin(base_url, src)
-                
+                src = desembrulhar_url_imagem(src)
+
                 figcaption = element.find('figcaption')
                 alt = figcaption.get_text(strip=True) if figcaption else img.get('alt', '')
                 
@@ -917,6 +919,26 @@ def add_hyperlink(paragraph, text, url):
     hyperlink.append(new_run)
     paragraph._p.append(hyperlink)
     return hyperlink
+
+
+def desembrulhar_url_imagem(url: str) -> str:
+    """
+    Desembrulha URLs do otimizador de imagem do Next.js (/_next/image?url=...),
+    retornando a URL original do CDN.
+
+    O proxy /_next/ e bloqueado pelo robots.txt da Alura, o que faz a API da
+    Anthropic recusar a imagem com 400 ("This URL is disallowed by the website's
+    robots.txt file").
+    """
+    if not url or '/_next/image' not in url:
+        return url
+    try:
+        original = parse_qs(urlparse(url).query).get('url', [''])[0]
+        if original.startswith('http://') or original.startswith('https://'):
+            return original
+    except Exception:
+        pass
+    return url
 
 
 def convert_relative_url(url: str, base_url: str) -> str:
