@@ -941,6 +941,96 @@ def desembrulhar_url_imagem(url: str) -> str:
     return url
 
 
+def _texto_do_item(item: dict) -> str:
+    """Extrai o texto de um item de conteudo (heading/paragraph), se houver."""
+    tipo = item.get('type')
+    if tipo == 'heading':
+        return (item.get('text') or '').strip()
+    if tipo == 'paragraph':
+        texto = item.get('text')
+        if texto:
+            return texto.strip()
+        segments = item.get('segments') or []
+        return ''.join(s.get('text', '') for s in segments).strip()
+    return ''
+
+
+MIN_PALAVRAS_ANCORA = 8
+MIN_CHARS_ANCORA = 40
+
+
+def _e_texto_util_para_ancora(texto: str) -> bool:
+    """
+    Aceita como ancora apenas texto de corpo do artigo.
+
+    O cabecalho da pagina (autor, data, "5 minutos de leitura") aparece logo
+    antes da imagem de capa e ancoraria a sugestao no lugar errado. Em vez de
+    listar cada padrao de metadado, usamos o que os separa na pratica: eles sao
+    curtos, paragrafos de conteudo nao.
+    """
+    return len(texto) >= MIN_CHARS_ANCORA and len(texto.split()) >= MIN_PALAVRAS_ANCORA
+
+
+def _truncar_em_palavra(texto: str, limite: int = 120) -> str:
+    """Corta o texto em no maximo `limite` chars, sem quebrar palavra."""
+    texto = ' '.join(texto.split())
+    if len(texto) <= limite:
+        return texto
+    corte = texto[:limite]
+    espaco = corte.rfind(' ')
+    return corte[:espaco] if espaco > 40 else corte
+
+
+def calcular_ancoras_imagens(content: list) -> list:
+    """
+    Para cada imagem do artigo, determina uma ancora: um trecho de texto que
+    existe LITERALMENTE no DOCX gerado, para o agente de imagem usar como
+    texto_original.
+
+    A geracao do DOCX escreve o alt text como legenda quando ele tem mais de
+    5 caracteres; nesse caso a propria legenda e a ancora. Sem alt text, a
+    imagem nao gera nenhum texto no documento, entao ancoramos no paragrafo
+    ou titulo mais proximo.
+
+    Retorna a lista de imagens (novos dicts) com 'ancora' e 'ancora_tipo'.
+    """
+    imagens = []
+
+    for idx, item in enumerate(content):
+        if item.get('type') != 'image':
+            continue
+
+        img = dict(item)
+        alt = (img.get('alt') or '').strip()
+
+        # A legenda so e escrita no DOCX quando o alt tem mais de 5 chars
+        if len(alt) > 5:
+            img['ancora'] = _truncar_em_palavra(alt)
+            img['ancora_tipo'] = 'legenda'
+            imagens.append(img)
+            continue
+
+        # Sem legenda: procura texto antes e, se nao houver, depois
+        ancora = ''
+        for vizinho in reversed(content[:idx]):
+            texto = _texto_do_item(vizinho)
+            if _e_texto_util_para_ancora(texto):
+                ancora = texto
+                break
+        if not ancora:
+            for vizinho in content[idx + 1:]:
+                texto = _texto_do_item(vizinho)
+                if _e_texto_util_para_ancora(texto):
+                    ancora = texto
+                    break
+
+        img['ancora'] = _truncar_em_palavra(ancora)
+        img['ancora_tipo'] = 'texto_proximo' if ancora else 'nenhuma'
+        imagens.append(img)
+
+    return imagens
+
+
 def _e_erro_de_fetch_de_imagem(err: Exception) -> bool:
     """
     Identifica erros 400 causados pela falha do provedor em baixar uma imagem
@@ -2932,9 +3022,10 @@ async def revisao_agente_imagem_form(
 
         article_data = extract_article_content(html, url_artigo)
 
-        # Filtra apenas itens do tipo "image"
-        imagens = [item for item in article_data.get('content', []) if item.get('type') == 'image']
-        print(f"📸 {len(imagens)} imagens encontradas")
+        # Filtra imagens e calcula a ancora de cada uma (texto que existe no DOCX)
+        imagens = calcular_ancoras_imagens(article_data.get('content', []))
+        sem_ancora = sum(1 for i in imagens if i.get('ancora_tipo') == 'nenhuma')
+        print(f"📸 {len(imagens)} imagens encontradas ({sem_ancora} sem ancora)")
 
         if not imagens:
             return {

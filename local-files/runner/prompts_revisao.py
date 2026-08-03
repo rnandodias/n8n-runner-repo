@@ -418,25 +418,62 @@ Para revisoes de imagens, use esta estrutura adaptada:
   {{
     "tipo": "IMAGEM",
     "acao": "substituir|deletar|inserir|comentario",
-    "texto_original": "descricao ou alt text da imagem sendo referenciada",
+    "texto_original": "trecho copiado LITERALMENTE do documento (a ANCORA da imagem)",
     "texto_novo": "novo alt text ou descricao da acao sugerida",
     "justificativa": "explicacao clara da mudanca",
-    "imagem_ref": "URL ou indice da imagem (ex: 'Imagem 1', 'Imagem 2')"
+    "imagem_ref": "indice da imagem (ex: 'Imagem 1', 'Imagem 2')"
   }}
 ]
 ```
 
+## REGRA CRITICA: o campo texto_original
+
+Sua sugestao sera ancorada no documento procurando o texto_original LITERALMENTE
+dentro dele. Se esse texto nao existir no documento, sua sugestao e DESCARTADA e
+o trabalho e perdido.
+
+Cada imagem listada abaixo vem com uma ANCORA: um trecho que existe palavra por
+palavra no documento.
+
+- SEMPRE copie a ANCORA da imagem no campo texto_original, exatamente como
+  fornecida (mesmas palavras, mesma pontuacao, mesmos acentos).
+- Alternativa: copie outro trecho literal do artigo, se for mais preciso para a
+  sua sugestao.
+- Identifique de qual imagem voce esta falando pelo campo imagem_ref, NUNCA
+  escrevendo isso no texto_original.
+
+NUNCA use no texto_original:
+- descricoes da imagem: "Alt text vazio", "Imagem 1 - sem alt text"
+- referencias a secoes ou posicoes: "Secao <input> (P21-P33)", "P38-P40"
+- generalizacoes: "Todas as imagens do artigo", "Artigo completo"
+- marcadores de paragrafo do contexto: "[P15|HEADING2]"
+
+Exemplos, para uma imagem cuja ANCORA e "Criando pasta posts dentro da pasta pages":
+
+CORRETO:
+{{"tipo": "IMAGEM", "acao": "substituir",
+  "texto_original": "Criando pasta posts dentro da pasta pages",
+  "texto_novo": "Estrutura de diretorios do Next.js mostrando a pasta posts criada dentro de pages",
+  "justificativa": "O alt text atual descreve a acao, mas nao o que se ve na tela.",
+  "imagem_ref": "Imagem 2"}}
+
+ERRADO (seria descartado):
+{{"texto_original": "Imagem 2 - sem alt text adequado"}}
+{{"texto_original": "Secao sobre rotas dinamicas (P12-P18)"}}
+
 ### Acoes especificas para imagens:
 - Use "substituir" para sugerir novo alt text ou indicar que screenshot precisa ser atualizado
 - Use "deletar" para indicar imagens irrelevantes que devem ser removidas
-- Use "inserir" para sugerir onde adicionar novas imagens (texto_original = contexto da secao)
+- Use "inserir" para sugerir onde adicionar novas imagens (texto_original = ancora da
+  imagem mais proxima do local sugerido, ou trecho literal da secao)
 - Use "comentario" para observacoes gerais sobre qualidade, consistencia, etc.
+  Para observacoes que valem para varias imagens, ancore na ANCORA da primeira
+  imagem envolvida e cite as demais na justificativa.
 
 ## REGRAS
 - NAO altere o texto do artigo (isso e responsabilidade de outros agentes)
 - NAO sugira mudancas de SEO ou estrutura
 - Foque APENAS em aspectos visuais e de acessibilidade
-- Seja especifico ao referenciar imagens (use o alt text ou indice para identificar)
 - Quando pesquisar na web para verificar interfaces, mencione a fonte na justificativa
 """
 
@@ -491,15 +528,33 @@ def formatar_prompt_imagem(
     imagens_texto = []
     for i, img in enumerate(imagens, 1):
         img_url = img.get('url', 'URL nao disponivel')
-        img_alt = img.get('alt', 'Sem alt text')
+        img_alt = (img.get('alt') or '').strip()
         img_width = img.get('width', 'N/A')
         img_height = img.get('height', 'N/A')
-        imagens_texto.append(
-            f"**Imagem {i}:**\n"
-            f"- URL: {img_url}\n"
-            f"- Alt text: {img_alt}\n"
-            f"- Dimensoes: {img_width}x{img_height}"
-        )
+
+        linhas = [
+            f"**Imagem {i}:**",
+            f"- URL: {img_url}",
+            f"- Alt text: {img_alt if img_alt else 'SEM ALT TEXT'}",
+            f"- Dimensoes: {img_width}x{img_height}",
+        ]
+
+        # Ancora: trecho que existe literalmente no DOCX (ver REGRA CRITICA)
+        ancora = (img.get('ancora') or '').strip()
+        if ancora:
+            origem = (
+                "legenda da imagem no documento"
+                if img.get('ancora_tipo') == 'legenda'
+                else "texto proximo a imagem (a imagem nao tem legenda no documento)"
+            )
+            linhas.append(f'- ANCORA ({origem}) -> copie em texto_original: "{ancora}"')
+        else:
+            linhas.append(
+                "- ANCORA: nao disponivel. Use um trecho literal do artigo "
+                "proximo a esta imagem."
+            )
+
+        imagens_texto.append("\n".join(linhas))
 
     imagens_formatadas = "\n\n".join(imagens_texto) if imagens_texto else "Nenhuma imagem encontrada no artigo."
 
