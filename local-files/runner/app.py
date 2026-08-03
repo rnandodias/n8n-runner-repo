@@ -941,6 +941,25 @@ def desembrulhar_url_imagem(url: str) -> str:
     return url
 
 
+def _e_erro_de_fetch_de_imagem(err: Exception) -> bool:
+    """
+    Identifica erros 400 causados pela falha do provedor em baixar uma imagem
+    por URL (robots.txt, 403, timeout), que sao recuperaveis reenviando a
+    imagem como base64.
+    """
+    msg = str(err).lower()
+    marcadores = (
+        'robots.txt',
+        'unable to fetch',
+        'failed to fetch',
+        'could not process image',
+        'error while downloading',
+        'timeout while downloading',
+        'invalid image url',
+    )
+    return any(m in msg for m in marcadores)
+
+
 def convert_relative_url(url: str, base_url: str) -> str:
     if not url:
         return url
@@ -2950,7 +2969,33 @@ async def revisao_agente_imagem_form(
             )
         except Exception as llm_err:
             print(f"❌ Erro ao chamar LLM: {type(llm_err).__name__}: {llm_err}")
-            raise
+
+            # Falha ao buscar imagem por URL (robots.txt, 403, timeout do fetcher
+            # do provedor): tenta de novo baixando tudo localmente como base64.
+            if not _e_erro_de_fetch_de_imagem(llm_err):
+                raise
+
+            print("🔁 Retry: reenviando todas as imagens como base64...")
+            try:
+                resposta = llm_client.gerar_resposta_com_imagens_e_busca(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    imagens=imagens,
+                    artigo_context=artigo_context,
+                    forcar_base64=True
+                )
+            except Exception as retry_err:
+                # Nao derruba a revisao inteira por causa das imagens: os outros
+                # agentes ja entregaram. Retorna vazio com o motivo explicito.
+                print(f"❌ Retry com base64 tambem falhou: {type(retry_err).__name__}: {retry_err}")
+                return {
+                    "tipo": "IMAGEM",
+                    "total_sugestoes": 0,
+                    "total_imagens": len(imagens),
+                    "revisoes": [],
+                    "erro": f"{type(retry_err).__name__}: {retry_err}",
+                    "mensagem": "Nao foi possivel analisar as imagens do artigo"
+                }
 
         print(f"📝 Resposta recebida ({len(resposta) if resposta else 0} chars)")
         print(f"📝 Preview: {resposta[:500] if resposta else 'VAZIA'}...")

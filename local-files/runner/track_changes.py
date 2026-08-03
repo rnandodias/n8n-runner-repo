@@ -37,10 +37,42 @@ REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships'
 # mas que nao existem no XML do DOCX (sao formatacao de paragrafo)
 BULLET_CHARS = set('\u2022\u00b7\u25aa\u25b8\u25ba\u25c6\u25c7\u25cb\u25cf\u25a0\u25a1')
 
+# Marcadores de paragrafo que o runner injeta no texto enviado ao LLM
+# (ex: "[P15|HEADING2] "), e que os agentes as vezes copiam de volta no
+# texto_original. Eles nao existem no DOCX, entao a busca falharia sempre.
+MARCADOR_PARAGRAFO_RE = re.compile(r'\[P\d+(?:\|[A-Z0-9_]+)?\]\s*')
+
 
 # =============================================================================
 # FUNCOES DE NORMALIZACAO
 # =============================================================================
+
+def limpar_marcadores_paragrafo(texto: str) -> str:
+    """Remove marcadores [Pxx] / [Pxx|TIPO] que o LLM copiou do prompt."""
+    if not texto or '[P' not in texto:
+        return texto
+    return MARCADOR_PARAGRAFO_RE.sub('', texto).strip()
+
+
+def sanitizar_revisoes(revisoes: list) -> list:
+    """
+    Limpa os campos textuais das revisoes antes do matching.
+
+    Retorna novos dicts (nao muta a entrada) com os marcadores de paragrafo
+    removidos de texto_original e texto_novo.
+    """
+    limpas = []
+    for rev in revisoes:
+        if not isinstance(rev, dict):
+            continue
+        rev = dict(rev)
+        for campo in ('texto_original', 'texto_novo'):
+            valor = rev.get(campo)
+            if isinstance(valor, str):
+                rev[campo] = limpar_marcadores_paragrafo(valor)
+        limpas.append(rev)
+    return limpas
+
 
 def normalizar_texto(texto: str) -> str:
     """Normaliza texto para matching flexivel."""
@@ -149,6 +181,9 @@ class TrackChangesApplicator:
         self.revision_id = 1
         self.comments = []
         self.resultados = []
+
+        # Remove marcadores [Pxx|TIPO] que o LLM tenha copiado do prompt
+        revisoes = sanitizar_revisoes(revisoes)
 
         # Copia arquivo para output
         shutil.copy(self.input_path, self.output_path)
@@ -1048,6 +1083,9 @@ class CommentApplicator:
         self.estatisticas = {
             'exato': 0, 'normalizado': 0, 'fuzzy': 0, 'paragrafo': 0, 'falha': 0,
         }
+
+        # Remove marcadores [Pxx|TIPO] que o LLM tenha copiado do prompt
+        revisoes = sanitizar_revisoes(revisoes)
 
         shutil.copy(self.input_path, self.output_path)
 

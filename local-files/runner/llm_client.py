@@ -195,7 +195,8 @@ class LLMClient(ABC):
         user_prompt: str,
         imagens: list,
         max_tokens: int = 32000,
-        artigo_context: str = None
+        artigo_context: str = None,
+        forcar_base64: bool = False
     ) -> str:
         """
         Gera resposta com visao multimodal E busca web.
@@ -326,10 +327,13 @@ class AnthropicClient(LLMClient):
         ) as stream:
             return stream.get_final_text()
 
-    def _preparar_imagens_para_mensagem(self, imagens: list) -> list:
+    def _preparar_imagens_para_mensagem(self, imagens: list, forcar_base64: bool = False) -> list:
         """
         Prepara lista de imagens para o formato de mensagem da Anthropic.
         Tenta usar URL direta para cdn-wcsm.alura.com.br, fallback para base64.
+
+        forcar_base64=True baixa todas as imagens localmente, contornando
+        qualquer restricao do fetcher da Anthropic (robots.txt, 403, timeout).
         """
         content_blocks = []
 
@@ -339,7 +343,7 @@ class AnthropicClient(LLMClient):
                 continue
 
             # Tenta usar URL direta para CDN da Alura (imagens publicas)
-            if _e_url_cdn_publica(url):
+            if _e_url_cdn_publica(url) and not forcar_base64:
                 # Verifica tamanho antes de incluir (limite 5MB da API)
                 if not _verificar_tamanho_imagem_url(url):
                     continue
@@ -397,11 +401,12 @@ class AnthropicClient(LLMClient):
         user_prompt: str,
         imagens: list,
         max_tokens: int = 32000,
-        artigo_context: str = None
+        artigo_context: str = None,
+        forcar_base64: bool = False
     ) -> str:
         """Gera resposta com visao multimodal E busca web (Claude Vision + Web Search)."""
         # Prepara blocos de imagem
-        image_blocks = self._preparar_imagens_para_mensagem(imagens)
+        image_blocks = self._preparar_imagens_para_mensagem(imagens, forcar_base64=forcar_base64)
 
         # Monta conteudo: texto + imagens
         content = [{"type": "text", "text": user_prompt}]
@@ -442,10 +447,13 @@ class OpenAIClient(LLMClient):
         )
         return response.choices[0].message.content
 
-    def _preparar_imagens_para_mensagem(self, imagens: list) -> list:
+    def _preparar_imagens_para_mensagem(self, imagens: list, forcar_base64: bool = False) -> list:
         """
         Prepara lista de imagens para o formato de mensagem da OpenAI.
         Usa URL direta ou base64.
+
+        forcar_base64=True baixa todas as imagens localmente, contornando
+        restricoes do fetcher da OpenAI (robots.txt, 403, timeout).
         """
         image_contents = []
 
@@ -455,7 +463,7 @@ class OpenAIClient(LLMClient):
                 continue
 
             # OpenAI suporta URL direta para imagens publicas
-            if url.startswith('http'):
+            if url.startswith('http') and not forcar_base64:
                 image_contents.append({
                     "type": "image_url",
                     "image_url": {"url": url}
@@ -481,11 +489,12 @@ class OpenAIClient(LLMClient):
         user_prompt: str,
         imagens: list,
         max_tokens: int = 32000,
-        artigo_context: str = None
+        artigo_context: str = None,
+        forcar_base64: bool = False
     ) -> str:
         """Gera resposta com visao multimodal (GPT-4 Vision)."""
         # Prepara conteudo: texto + imagens
-        image_contents = self._preparar_imagens_para_mensagem(imagens)
+        image_contents = self._preparar_imagens_para_mensagem(imagens, forcar_base64=forcar_base64)
 
         user_content = [{"type": "text", "text": user_prompt}]
         user_content.extend(image_contents)
@@ -506,14 +515,18 @@ class OpenAIClient(LLMClient):
         user_prompt: str,
         imagens: list,
         max_tokens: int = 32000,
-        artigo_context: str = None
+        artigo_context: str = None,
+        forcar_base64: bool = False
     ) -> str:
         """
         Gera resposta com visao multimodal.
         AVISO: OpenAI nao tem busca web integrada como Anthropic.
         """
         print("AVISO: OpenAI nao suporta busca web integrada. Usando apenas visao.")
-        return self.gerar_resposta_com_imagens(system_prompt, user_prompt, imagens, max_tokens, artigo_context=artigo_context)
+        return self.gerar_resposta_com_imagens(
+            system_prompt, user_prompt, imagens, max_tokens,
+            artigo_context=artigo_context, forcar_base64=forcar_base64
+        )
 
 
 def criar_cliente_llm(provider: str = None, model: str = None) -> LLMClient:
